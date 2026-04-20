@@ -10,4 +10,5 @@ your Applications folder.
 ## Running from Source
 
 1. Clone this repository.
-2. Run `python codex_monitor.py`.
+2. Install dependencies with `pip install -r requirements.txt`.
+3. Run `python codex_monitor.py`.
