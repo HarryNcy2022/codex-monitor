@@ -1,26 +1,5 @@
 import os
 import json
-import urllib.request
-import urllib.error
-import tkinter as tk
-from tkinter import ttk
-from datetime import datetime
-import threading
-import select
-import ssl
-
-# Automatically resolves to /Users/<your_username>/.codex/auth.json
-AUTH_FILE_PATH = os.path.expanduser('~/.codex/auth.json')
-AUTH_DIR = os.path.dirname(AUTH_FILE_PATH)
-
-# Lightweight local storage equivalent
-LOCAL_STORAGE_FILE = os.path.expanduser('~/.codex_usage_store.json')
-
-# API URL
-USAGE_API_URL = 'https://chatgpt.com/backend-api/wham/usage'
-
-import os
-import json
 import time
 import urllib.request
 import urllib.error
@@ -30,6 +9,7 @@ from datetime import datetime
 import threading
 import select
 import ssl
+import certifi
 
 # Automatically resolves to /Users/<your_username>/.codex/auth.json
 AUTH_FILE_PATH = os.path.expanduser('~/.codex/auth.json')
@@ -141,8 +121,21 @@ class CodexMonitorApp:
         # Status Bar
         self.status_var = tk.StringVar()
         self.status_var.set(f"Watching: {AUTH_FILE_PATH} (kqueue)")
-        status_label = tk.Label(self.root, textvariable=self.status_var, fg="gray", font=("Arial", 10))
-        status_label.pack(side=tk.BOTTOM, fill=tk.X, pady=5)
+
+        # Get the default window background color so it blends in perfectly
+        bg_color = self.root.cget("background")
+
+        status_label = tk.Entry(
+            self.root,
+            textvariable=self.status_var,
+            fg="gray",
+            font=("Arial", 10),
+            bd=0,  # No border
+            readonlybackground=bg_color,  # Match window background
+            highlightthickness=0,
+            state="readonly"  # Makes it copyable but not editable
+        )
+        status_label.pack(side=tk.BOTTOM, fill=tk.X, pady=5, padx=10)
 
     def load_data(self):
         data = {}
@@ -258,11 +251,10 @@ class CodexMonitorApp:
         req.add_header('Authorization', f'Bearer {jwt}')
         req.add_header('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
 
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = ssl.create_default_context(cafile=certifi.where())
 
-        with urllib.request.urlopen(req, context=ctx) as response:
+        # Added timeout=15 to prevent the socket from hanging indefinitely
+        with urllib.request.urlopen(req, context=ctx, timeout=15) as response:
             return json.loads(response.read().decode('utf-8'))
 
     def update_map_from_res(self, res_data, jwt):
@@ -299,15 +291,35 @@ class CodexMonitorApp:
             if success:
                 email = res.get("email")
                 self.root.after(0, self.refresh_ui)
-                self.root.after(0, lambda: self.status_var.set(f"Successfully updated quota for {email}"))
+                msg = f"Successfully updated quota for {email}"
+                self.root.after(0, lambda m=msg: self.status_var.set(m))
             else:
-                self.root.after(0, lambda: self.status_var.set(
-                    "Warning: Could not find email or reset_at in API response"))
+                msg = "Warning: Could not find email or reset_at in API response"
+                self.root.after(0, lambda m=msg: self.status_var.set(m))
+                print(f"[Safe Error Log] {msg}")
+
         except urllib.error.HTTPError as e:
             err_msg = f"HTTP Error {e.code} - Token might be expired"
-            self.root.after(0, lambda: self.status_var.set(err_msg))
+            print(f"[Safe Error Log] {err_msg}")
+            self.root.after(0, lambda m=err_msg: self.status_var.set(m))
+
+        except (urllib.error.URLError, TimeoutError) as e:
+            # Properly stringify the error to avoid Tkinter lambda garbage collection crashes
+            err_msg = f"Network Error: {getattr(e, 'reason', str(e))}"
+
+            # Diagnose the exact macOS SSL issue and offer a secure solution on the UI
+            if "CERTIFICATE_VERIFY_FAILED" in str(getattr(e, 'reason', '')):
+                err_msg = "SSL Error: Run 'Install Certificates.command' in Mac Python folder, or run 'pip install certifi'"
+
+            print(f"[Safe Error Log] {err_msg}")
+
+            # Using `m=err_msg` safely locks the string value into the lambda
+            self.root.after(0, lambda m=err_msg: self.status_var.set(m))
+
         except Exception as e:
-            self.root.after(0, lambda: self.status_var.set(f"Network error: {e}"))
+            err_msg = f"Unknown error: {str(e)}"
+            print(f"[Safe Error Log] Exception triggered: {err_msg}")
+            self.root.after(0, lambda m=err_msg: self.status_var.set(m))
 
     def check_auto_fetch(self):
         now = time.time()
