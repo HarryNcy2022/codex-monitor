@@ -7,9 +7,10 @@ import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
 import threading
-import select
 import ssl
 import certifi
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 # Automatically resolves to /Users/<your_username>/.codex/auth.json
 AUTH_FILE_PATH = os.path.expanduser('~/.codex/auth.json')
@@ -67,6 +68,31 @@ USAGE_API_URL = 'https://chatgpt.com/backend-api/wham/usage'
 """
 
 
+class AuthFileHandler(FileSystemEventHandler):
+    def __init__(self, callback, target_file):
+        self.callback = callback
+        self.target_file = os.path.abspath(target_file)
+
+    def _matches(self, path):
+        return path and os.path.abspath(path) == self.target_file
+
+    def on_modified(self, event):
+        if not event.is_directory and self._matches(event.src_path):
+            self.callback()
+
+    def on_created(self, event):
+        if not event.is_directory and self._matches(event.src_path):
+            self.callback()
+
+    def on_deleted(self, event):
+        if not event.is_directory and self._matches(event.src_path):
+            self.callback()
+
+    def on_moved(self, event):
+        if not event.is_directory and (self._matches(event.src_path) or self._matches(event.dest_path)):
+            self.callback()
+
+
 class CodexMonitorApp:
     def __init__(self, root):
         self.root = root
@@ -75,52 +101,77 @@ class CodexMonitorApp:
         self.root.minsize(700, 250)
 
         self.usage_map = self.load_data()
-        self.last_mtime = 0
-        if os.path.exists(AUTH_FILE_PATH):
-            self.last_mtime = os.path.getmtime(AUTH_FILE_PATH)
-
+        self.session_tokens = {}
+        self.current_account_email = None
         self._timer_id = None
+        self._last_file_event_time = 0.0
+        self._active_combobox = None
+        self._auto_fetch_editor_email = None
+        self.observer = None
 
         self.setup_ui()
         self.refresh_ui()
 
-        # Start the macOS native kernel watcher in the background
-        self.start_kqueue_watcher()
+        self.start_watchdog()
+        self.root.after(0, self.initial_fetch_on_startup)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def setup_ui(self):
+        style = ttk.Style()
+        style.configure("Codex.Treeview", rowheight=32, font=("Arial", 11))
+        style.configure("Codex.Treeview.Heading", font=("Arial", 11, "bold"))
+        style.configure("AutoFetch.TCombobox", font=("Arial", 11))
+        style.map(
+            "Codex.Treeview",
+            background=[("selected", "#F5F5F5")],
+            foreground=[("selected", "#202124")]
+        )
+
+        self.root.grid_columnconfigure(0, weight=1)
+        self.root.grid_rowconfigure(1, weight=1)
+
         # Top frame for buttons
         top_frame = tk.Frame(self.root)
-        top_frame.pack(fill=tk.X, padx=10, pady=5)
+        top_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(5, 0))
 
         btn_manual = ttk.Button(top_frame, text="Manual Fetch (Current auth.json)", command=self.manual_fetch)
         btn_manual.pack(side=tk.LEFT)
 
         # Main Table frame
         frame = tk.Frame(self.root)
-        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
 
         columns = ('Email', 'Quota Left', 'Reset Time', 'Time Until Reset', 'Auto-Fetch')
-        self.tree = ttk.Treeview(frame, columns=columns, show='headings')
+        self.tree = ttk.Treeview(
+            frame,
+            columns=columns,
+            show='headings',
+            style="Codex.Treeview",
+            selectmode="none",
+            takefocus=False
+        )
         self.tree.heading('Email', text='Account Email')
         self.tree.heading('Quota Left', text='Quota Left')
         self.tree.heading('Reset Time', text='Reset Time')
         self.tree.heading('Time Until Reset', text='Time Until Reset')
         self.tree.heading('Auto-Fetch', text='Auto-Fetch ▾')
 
-        self.tree.column('Email', width=220)
+        self.tree.column('Email', width=300)
         self.tree.column('Quota Left', width=100, anchor=tk.CENTER)
         self.tree.column('Reset Time', width=180, anchor=tk.CENTER)
         self.tree.column('Time Until Reset', width=130, anchor=tk.CENTER)
-        self.tree.column('Auto-Fetch', width=100, anchor=tk.CENTER)
+        self.tree.column('Auto-Fetch', width=125, anchor=tk.CENTER)
 
-        self.tree.pack(fill=tk.BOTH, expand=True)
-
-        # Bind click for dropdown injection
-        self.tree.bind("<ButtonRelease-1>", self.on_tree_click)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.tag_configure("current_account", background="#E8FFF1", foreground="#0F6B3C", font=("Arial", 11, "bold"))
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self.tree.selection_remove(self.tree.selection()))
+        self.tree.bind("<Configure>", lambda e: self.refresh_auto_fetch_editor())
 
         # Status Bar
         self.status_var = tk.StringVar()
-        self.status_var.set(f"Watching: {AUTH_FILE_PATH} (kqueue)")
+        self.status_var.set(f"Watching: {AUTH_FILE_PATH} (watchdog)")
 
         # Get the default window background color so it blends in perfectly
         bg_color = self.root.cget("background")
@@ -135,10 +186,11 @@ class CodexMonitorApp:
             highlightthickness=0,
             state="readonly"  # Makes it copyable but not editable
         )
-        status_label.pack(side=tk.BOTTOM, fill=tk.X, pady=5, padx=10)
+        status_label.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 5))
 
     def load_data(self):
         data = {}
+        needs_resave = False
         if os.path.exists(LOCAL_STORAGE_FILE):
             try:
                 with open(LOCAL_STORAGE_FILE, 'r') as f:
@@ -147,85 +199,139 @@ class CodexMonitorApp:
                     for k, v in raw.items():
                         if isinstance(v, (int, float)):
                             data[k] = {
-                                "reset_ts": v, "used_percent": 0, "jwt": None,
+                                "reset_ts": v, "used_percent": 0,
                                 "auto_fetch": "None", "last_fetched": 0
                             }
+                            needs_resave = True
                         else:
-                            data[k] = v
+                            sanitized = dict(v)
+                            if "jwt" in sanitized:
+                                sanitized.pop("jwt", None)
+                                needs_resave = True
+                            data[k] = sanitized
             except Exception:
                 pass
+        if needs_resave:
+            self._save_sanitized_data(data)
         return data
+
+    def _save_sanitized_data(self, data):
+        sanitized_data = {}
+        for email, account_data in data.items():
+            clean_account = dict(account_data)
+            clean_account.pop("jwt", None)
+            sanitized_data[email] = clean_account
+
+        with open(LOCAL_STORAGE_FILE, 'w') as f:
+            json.dump(sanitized_data, f)
 
     def save_data(self):
         try:
-            with open(LOCAL_STORAGE_FILE, 'w') as f:
-                json.dump(self.usage_map, f)
+            self._save_sanitized_data(self.usage_map)
         except Exception as e:
             print(f"Failed to save data: {e}")
 
+    def clear_session_credentials(self):
+        had_current_account = self.current_account_email is not None or bool(self.session_tokens)
+        self.session_tokens.clear()
+        self.current_account_email = None
+        self._destroy_active_combobox()
+
+        if had_current_account:
+            self.root.after_idle(self.refresh_ui)
+
+    def set_current_account(self, email, jwt):
+        self.current_account_email = email
+        self.session_tokens = {email: jwt}
+
+        changed = False
+        for account_email, data in self.usage_map.items():
+            if account_email != email and data.get("auto_fetch", "None") != "None":
+                data["auto_fetch"] = "None"
+                changed = True
+
+        if changed:
+            self.save_data()
+
+    def get_display_auto_fetch(self, email, data):
+        if email != self.current_account_email:
+            return "-"
+        return data.get("auto_fetch", "None")
+
     # --- TREEVIEW COMBOBOX (DROPDOWN) LOGIC ---
-    def on_tree_click(self, event):
-        region = self.tree.identify("region", event.x, event.y)
-        if region != "cell": return
+    def _destroy_active_combobox(self):
+        if self._active_combobox and self._active_combobox.winfo_exists():
+            self._active_combobox.destroy()
+        self._active_combobox = None
+        self._auto_fetch_editor_email = None
 
-        column = self.tree.identify_column(event.x)
-        # Column #5 is 'Auto-Fetch'
-        if column == "#5":
-            item = self.tree.identify_row(event.y)
-            if not item: return
+    def save_auto_fetch_value(self, email, new_val):
+        if email in self.usage_map and email == self.current_account_email:
+            self.usage_map[email]["auto_fetch"] = new_val
+            self.save_data()
+            self.refresh_ui()
 
-            email = self.tree.item(item, "values")[0]
-            current_val = self.usage_map.get(email, {}).get("auto_fetch", "None")
+    def refresh_auto_fetch_editor(self):
+        email = self.current_account_email
+        if not email or email not in self.usage_map:
+            self._destroy_active_combobox()
+            return
 
-            x, y, w, h = self.tree.bbox(item, column)
+        try:
+            x, y, w, h = self.tree.bbox(email, "#5")
+        except tk.TclError:
+            self._destroy_active_combobox()
+            return
 
-            # Create combobox over the cell
-            cb = ttk.Combobox(self.tree, values=["None", "1 Hr", "3 Hrs", "12 Hrs", "24 Hrs"], state="readonly")
-            cb.place(x=x, y=y, width=w, height=h)
-            cb.set(current_val)
+        if not w or not h:
+            self._destroy_active_combobox()
+            return
 
-            def save_val(e=None):
-                new_val = cb.get()
-                if email in self.usage_map:
-                    self.usage_map[email]["auto_fetch"] = new_val
-                    self.save_data()
-                    self.refresh_ui()
-                cb.destroy()
+        pad_x = 3
+        pad_y = 2
 
-            cb.bind("<<ComboboxSelected>>", save_val)
-            cb.bind("<FocusOut>", lambda e: cb.destroy())
-            cb.focus_set()
+        if not self._active_combobox or not self._active_combobox.winfo_exists() or self._auto_fetch_editor_email != email:
+            self._destroy_active_combobox()
+            cb = ttk.Combobox(
+                self.tree,
+                values=["None", "1 Hr", "3 Hrs", "12 Hrs", "24 Hrs"],
+                state="readonly",
+                style="AutoFetch.TCombobox"
+            )
+            cb.bind("<<ComboboxSelected>>", lambda e, account_email=email, widget=cb: self.save_auto_fetch_value(account_email, widget.get()))
+            self._active_combobox = cb
+            self._auto_fetch_editor_email = email
+
+        self._active_combobox.set(self.usage_map[email].get("auto_fetch", "None"))
+        self._active_combobox.place(
+            x=x + pad_x,
+            y=y + pad_y,
+            width=max(w - (pad_x * 2), 40),
+            height=max(h - (pad_y * 2), 24)
+        )
 
     # --- BACKGROUND WATCHER & FETCH LOGIC ---
-    def start_kqueue_watcher(self):
+    def start_watchdog(self):
         os.makedirs(AUTH_DIR, exist_ok=True)
-        watcher_thread = threading.Thread(target=self._kqueue_watch_loop, daemon=True)
-        watcher_thread.start()
+        event_handler = AuthFileHandler(self.on_file_changed, AUTH_FILE_PATH)
+        self.observer = Observer()
+        self.observer.schedule(event_handler, AUTH_DIR, recursive=False)
+        self.observer.start()
 
-    def _kqueue_watch_loop(self):
-        fd = os.open(AUTH_DIR, os.O_RDONLY)
-        kq = select.kqueue()
-
-        flags = select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND | select.KQ_NOTE_RENAME
-        ev = select.kevent(fd, filter=select.KQ_FILTER_VNODE,
-                           flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
-                           fflags=flags)
-
-        while True:
-            events = kq.control([ev], 1, None)
-            if events:
-                try:
-                    if os.path.exists(AUTH_FILE_PATH):
-                        current_mtime = os.path.getmtime(AUTH_FILE_PATH)
-                        if current_mtime > self.last_mtime:
-                            self.last_mtime = current_mtime
-                            self.root.after(0, self.on_file_changed)
-                except Exception as e:
-                    print(f"Error checking file: {e}")
+    def initial_fetch_on_startup(self):
+        self.status_var.set("Checking current auth.json on startup...")
+        self.process_auth_file()
 
     def on_file_changed(self):
+        current_time = time.monotonic()
+        if current_time - self._last_file_event_time < 1.0:
+            return
+
+        self._last_file_event_time = current_time
+        self.root.after(0, self._handle_file_changed)
+
+    def _handle_file_changed(self):
         self.status_var.set("Auth file changed. Fetching new quota...")
-        self.root.update_idletasks()
         self.process_auth_file()
 
     def manual_fetch(self):
@@ -233,6 +339,11 @@ class CodexMonitorApp:
         self.process_auth_file()
 
     def process_auth_file(self):
+        if not os.path.exists(AUTH_FILE_PATH):
+            self.clear_session_credentials()
+            self.status_var.set("auth.json was removed. Logged out from Codex.")
+            return
+
         try:
             with open(AUTH_FILE_PATH, 'r') as f:
                 auth_data = json.load(f)
@@ -242,7 +353,10 @@ class CodexMonitorApp:
                 # Trigger async fetch to prevent UI freeze
                 threading.Thread(target=self._bg_fetch_single, args=(None, jwt), daemon=True).start()
             else:
-                self.status_var.set("No access_token found in auth.json")
+                self.clear_session_credentials()
+                self.status_var.set("No access_token found in auth.json. Logged out from Codex.")
+        except json.JSONDecodeError:
+            self.status_var.set("auth.json is empty or invalid JSON. Retrying after the next file change.")
         except Exception as e:
             self.status_var.set(f"Failed to parse auth.json: {e}")
 
@@ -269,16 +383,16 @@ class CodexMonitorApp:
             if email not in self.usage_map:
                 self.usage_map[email] = {}
 
-            # Store the token inside map to allow scheduled fetching without relying on auth.json
+            # Keep the token in memory only for this app session.
             self.usage_map[email].update({
                 "reset_ts": reset_at,
                 "used_percent": used_percent,
-                "jwt": jwt,
                 "last_fetched": time.time()
             })
             if "auto_fetch" not in self.usage_map[email]:
                 self.usage_map[email]["auto_fetch"] = "None"
 
+            self.set_current_account(email, jwt)
             self.save_data()
             return True
         return False
@@ -325,18 +439,25 @@ class CodexMonitorApp:
         now = time.time()
         interval_map = {"1 Hr": 3600, "3 Hrs": 10800, "12 Hrs": 43200, "24 Hrs": 86400}
 
-        for email, data in self.usage_map.items():
-            interval_str = data.get("auto_fetch", "None")
-            if interval_str == "None":
-                continue
+        current_email = self.current_account_email
+        if not current_email:
+            return
 
-            interval_sec = interval_map.get(interval_str, 0)
-            if interval_sec > 0 and (now - data.get("last_fetched", 0)) >= interval_sec:
-                # Update timestamp now to prevent multiple identical threads spawning
-                data["last_fetched"] = now
-                jwt = data.get("jwt")
-                if jwt:
-                    threading.Thread(target=self._bg_fetch_single, args=(email, jwt), daemon=True).start()
+        data = self.usage_map.get(current_email)
+        if not data:
+            return
+
+        interval_str = data.get("auto_fetch", "None")
+        if interval_str == "None":
+            return
+
+        interval_sec = interval_map.get(interval_str, 0)
+        if interval_sec > 0 and (now - data.get("last_fetched", 0)) >= interval_sec:
+            # Update timestamp now to prevent multiple identical threads spawning
+            data["last_fetched"] = now
+            jwt = self.session_tokens.get(current_email)
+            if jwt:
+                threading.Thread(target=self._bg_fetch_single, args=(current_email, jwt), daemon=True).start()
 
     # --- UI RENDERING LOGIC ---
     def refresh_ui(self):
@@ -358,7 +479,9 @@ class CodexMonitorApp:
             try:
                 reset_ts = data.get("reset_ts", 0)
                 used_percent = data.get("used_percent", 0)
-                auto_fetch = data.get("auto_fetch", "None")
+                auto_fetch = self.get_display_auto_fetch(email, data)
+                is_current = email == self.current_account_email
+                email_display = f"{email}   [CURRENT]" if is_current else email
 
                 reset_time_str = datetime.fromtimestamp(reset_ts).strftime('%Y-%m-%d %H:%M')
                 quota_left_str = f"{100 - used_percent}%"
@@ -382,11 +505,30 @@ class CodexMonitorApp:
 
                     countdown_text = " ".join(time_parts)
 
-                self.tree.insert('', tk.END, values=(email, quota_left_str, display_text, countdown_text, auto_fetch))
+                self.tree.insert(
+                    '',
+                    tk.END,
+                    iid=email,
+                    values=(email_display, quota_left_str, display_text, countdown_text, auto_fetch),
+                    tags=("current_account",) if is_current else ()
+                )
             except Exception:
-                self.tree.insert('', tk.END, values=(email, "Error", "Error", "Error", "None"))
+                self.tree.insert('', tk.END, iid=email, values=(email, "Error", "Error", "Error", "-"))
 
+        self.root.after_idle(self.refresh_auto_fetch_editor)
         self._timer_id = self.root.after(60000, self.refresh_ui)
+
+    def on_closing(self):
+        if self._timer_id:
+            self.root.after_cancel(self._timer_id)
+            self._timer_id = None
+
+        if self.observer:
+            self.observer.stop()
+            self.observer.join(timeout=2)
+            self.observer = None
+
+        self.root.destroy()
 
 
 if __name__ == "__main__":
