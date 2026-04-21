@@ -124,9 +124,9 @@ class CodexMonitorApp:
         header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 3))
         self._configure_account_columns(header_frame)
         self._build_header_cell(header_frame, "Account Email", 0, "w")
-        self._build_header_cell(header_frame, "Quota Left", 1, "center")
-        self._build_header_cell(header_frame, "Reset Time", 2, "center")
-        self._build_header_cell(header_frame, "Auto-Fetch", 3, "center")
+        self._build_header_cell(header_frame, "Quota Left", 1, "w")
+        self._build_header_cell(header_frame, "Reset Time", 2, "w")
+        self._build_header_cell(header_frame, "Auto-Fetch", 3, "w")
 
         body_frame = ctk.CTkFrame(
             accounts_shell,
@@ -426,7 +426,7 @@ class CodexMonitorApp:
             quota_left,
             row_text,
             1,
-            anchor="center",
+            anchor="w",
             bold=is_current,
         )
         self._build_value_label(
@@ -434,7 +434,7 @@ class CodexMonitorApp:
             reset_display,
             row_text,
             2,
-            anchor="center",
+            anchor="w",
         )
 
         if is_current:
@@ -454,17 +454,17 @@ class CodexMonitorApp:
                 button_color=tokens["heading_bg"],
                 button_hover_color=tokens["selection_bg"],
                 text_color=tokens["heading_fg"],
-                anchor="center",
+                anchor="w",
             )
             auto_fetch_menu.set(auto_fetch)
-            auto_fetch_menu.grid(row=0, column=3, sticky="", padx=10, pady=5)
+            auto_fetch_menu.grid(row=0, column=3, sticky="w", padx=10, pady=5)
         else:
             self._build_value_label(
                 row,
                 "-",
                 row_text,
                 3,
-                anchor="center",
+                anchor="w",
             )
 
     def initial_fetch_on_startup(self) -> None:
