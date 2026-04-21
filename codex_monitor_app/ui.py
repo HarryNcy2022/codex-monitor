@@ -45,6 +45,7 @@ class CodexMonitorApp:
         self._pending_fetches = 0
         self._accounts_window_id: Optional[int] = None
         self.manual_button: Optional[ctk.CTkButton] = None
+        self.theme_button: Optional[ctk.CTkButton] = None
 
         self.setup_ui()
         self.refresh_ui()
@@ -96,37 +97,31 @@ class CodexMonitorApp:
     def setup_ui(self) -> None:
         tokens = self._theme_tokens()
         self.root.configure(fg_color=tokens["app_bg"])
+        self.root.unbind_all("<MouseWheel>")
+        self.root.unbind_all("<Button-4>")
+        self.root.unbind_all("<Button-5>")
 
         self.root.grid_columnconfigure(0, weight=1)
         self.root.grid_rowconfigure(0, weight=1)
 
-        frame = ctk.CTkFrame(
+        accounts_shell = ctk.CTkFrame(
             self.root,
-            corner_radius=22,
-            fg_color=tokens["card"],
+            corner_radius=14,
+            fg_color=tokens["table_shell"],
             border_width=1,
             border_color=tokens["border"],
         )
-        frame.grid(row=0, column=0, sticky="nsew", padx=16, pady=(16, 8))
-        frame.grid_columnconfigure(0, weight=1)
-        frame.grid_rowconfigure(0, weight=1)
-
-        accounts_shell = ctk.CTkFrame(
-            frame,
-            corner_radius=18,
-            fg_color=tokens["table_shell"],
-        )
-        accounts_shell.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
+        accounts_shell.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 6))
         accounts_shell.grid_columnconfigure(0, weight=1)
         accounts_shell.grid_rowconfigure(1, weight=1)
         self.accounts_shell = accounts_shell
 
         header_frame = ctk.CTkFrame(
             accounts_shell,
-            corner_radius=14,
+            corner_radius=10,
             fg_color=tokens["heading_bg"],
         )
-        header_frame.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 3))
         self._configure_account_columns(header_frame)
         self._build_header_cell(header_frame, "Account Email", 0, "w")
         self._build_header_cell(header_frame, "Quota Left", 1, "center")
@@ -135,10 +130,10 @@ class CodexMonitorApp:
 
         body_frame = ctk.CTkFrame(
             accounts_shell,
-            corner_radius=14,
+            corner_radius=10,
             fg_color="transparent",
         )
-        body_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        body_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=(0, 5))
         body_frame.grid_columnconfigure(0, weight=1)
         body_frame.grid_rowconfigure(0, weight=1)
 
@@ -150,7 +145,7 @@ class CodexMonitorApp:
             background=tokens["table_shell"],
         )
         self.accounts_canvas.grid(row=0, column=0, sticky="nsew")
-        self.accounts_canvas.configure(yscrollincrement=8)
+        self.accounts_canvas.configure(yscrollincrement=6)
 
         accounts_scrollbar = ctk.CTkScrollbar(
             body_frame,
@@ -185,12 +180,12 @@ class CodexMonitorApp:
 
         status_frame = ctk.CTkFrame(
             self.root,
-            corner_radius=18,
+            corner_radius=12,
             fg_color=tokens["card_alt"],
             border_width=1,
             border_color=tokens["border"],
         )
-        status_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 16))
+        status_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         status_frame.grid_columnconfigure(0, weight=1)
 
         self.status_var = tk.StringVar(value=f"Watching: {AUTH_FILE_PATH} (watchdog)")
@@ -199,27 +194,70 @@ class CodexMonitorApp:
             textvariable=self.status_var,
             anchor="w",
             justify="left",
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=11),
             text_color=tokens["muted"],
         )
-        status_label.grid(row=0, column=0, sticky="ew", padx=(16, 12), pady=12)
+        status_label.grid(row=0, column=0, sticky="ew", padx=(12, 10), pady=9)
 
         self.manual_button = ctk.CTkButton(
             status_frame,
-            text="Fetch Current auth.json",
+            text=self._fetch_button_icon(),
             command=self.manual_fetch,
-            corner_radius=14,
-            height=38,
-            width=190,
-            font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=11,
+            height=34,
+            width=34,
+            font=ctk.CTkFont(size=16, weight="bold"),
         )
-        self.manual_button.grid(row=0, column=1, sticky="e", padx=(0, 16), pady=10)
+        self.manual_button.grid(row=0, column=1, sticky="e", padx=(0, 6), pady=7)
+
+        self.theme_button = ctk.CTkButton(
+            status_frame,
+            text=self._appearance_toggle_icon(),
+            command=self.toggle_appearance_mode,
+            corner_radius=11,
+            height=34,
+            width=34,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color=tokens["heading_bg"],
+            hover_color=tokens["selection_bg"],
+            text_color=tokens["heading_fg"],
+        )
+        self.theme_button.grid(row=0, column=2, sticky="e", padx=(0, 10), pady=7)
+        self._update_manual_button_state()
 
     def _configure_account_columns(self, frame: ctk.CTkFrame) -> None:
         frame.grid_columnconfigure(0, weight=5, uniform="account-cols")
         frame.grid_columnconfigure(1, weight=2, uniform="account-cols")
         frame.grid_columnconfigure(2, weight=4, uniform="account-cols")
         frame.grid_columnconfigure(3, weight=3, uniform="account-cols")
+
+    def _fetch_button_icon(self) -> str:
+        return "↻"
+
+    def _appearance_toggle_icon(self) -> str:
+        if ctk.get_appearance_mode().lower() == "dark":
+            return "☀"
+        return "☾"
+
+    def rebuild_ui(self) -> None:
+        status_message = self.status_var.get() if hasattr(self, "status_var") else ""
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        self.manual_button = None
+        self.theme_button = None
+        self._accounts_window_id = None
+        self.setup_ui()
+        if status_message:
+            self.status_var.set(status_message)
+        self._update_manual_button_state()
+        self.refresh_ui(skip_auto_fetch=True)
+
+    def toggle_appearance_mode(self) -> None:
+        next_mode = (
+            "light" if ctk.get_appearance_mode().lower() == "dark" else "dark"
+        )
+        ctk.set_appearance_mode(next_mode)
+        self.rebuild_ui()
 
     def _build_header_cell(
         self,
@@ -233,10 +271,10 @@ class CodexMonitorApp:
             parent,
             text=text,
             anchor=anchor,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(size=11, weight="bold"),
             text_color=tokens["heading_fg"],
         )
-        label.grid(row=0, column=column, sticky="ew", padx=14, pady=12)
+        label.grid(row=0, column=column, sticky="ew", padx=10, pady=9)
 
     def _build_value_label(
         self,
@@ -251,10 +289,10 @@ class CodexMonitorApp:
             parent,
             text=text,
             anchor=anchor,
-            font=ctk.CTkFont(size=12, weight="bold" if bold else "normal"),
+            font=ctk.CTkFont(size=11, weight="bold" if bold else "normal"),
             text_color=text_color,
         )
-        label.grid(row=0, column=column, sticky="ew", padx=14, pady=12)
+        label.grid(row=0, column=column, sticky="ew", padx=10, pady=8)
 
     def _clear_account_rows(self) -> None:
         for widget in self.accounts_rows_frame.winfo_children():
@@ -329,9 +367,12 @@ class CodexMonitorApp:
             return
 
         if self._pending_fetches > 0:
-            self.manual_button.configure(state="disabled", text="Fetching...")
+            self.manual_button.configure(state="disabled", text="…")
         else:
-            self.manual_button.configure(state="normal", text="Fetch Current auth.json")
+            self.manual_button.configure(state="normal", text=self._fetch_button_icon())
+
+        if self.theme_button:
+            self.theme_button.configure(text=self._appearance_toggle_icon())
 
     def _begin_fetch(self, status_message: str) -> None:
         self._pending_fetches += 1
@@ -362,14 +403,14 @@ class CodexMonitorApp:
             tokens["row_even"] if index % 2 == 0 else tokens["row_odd"]
         )
         row_text = tokens["current_fg"] if is_current else tokens["table_fg"]
-        email_display = f"{email}   CURRENT SESSION" if is_current else email
+        email_display = f"{email}   ACTIVE" if is_current else email
 
         row = ctk.CTkFrame(
             self.accounts_rows_frame,
             fg_color=row_bg,
-            corner_radius=14,
+            corner_radius=10,
         )
-        row.grid(row=index, column=0, sticky="ew", padx=2, pady=4)
+        row.grid(row=index, column=0, sticky="ew", padx=1, pady=2)
         self._configure_account_columns(row)
 
         self._build_value_label(
@@ -403,12 +444,12 @@ class CodexMonitorApp:
                 command=lambda choice, account_email=email: (
                     self.save_auto_fetch_value(account_email, choice)
                 ),
-                width=150,
-                height=32,
-                corner_radius=10,
+                width=136,
+                height=28,
+                corner_radius=9,
                 dynamic_resizing=False,
-                font=ctk.CTkFont(size=12, weight="bold"),
-                dropdown_font=ctk.CTkFont(size=12),
+                font=ctk.CTkFont(size=11, weight="bold"),
+                dropdown_font=ctk.CTkFont(size=11),
                 fg_color=tokens["heading_bg"],
                 button_color=tokens["heading_bg"],
                 button_hover_color=tokens["selection_bg"],
@@ -416,7 +457,7 @@ class CodexMonitorApp:
                 anchor="center",
             )
             auto_fetch_menu.set(auto_fetch)
-            auto_fetch_menu.grid(row=0, column=3, sticky="", padx=14, pady=8)
+            auto_fetch_menu.grid(row=0, column=3, sticky="", padx=10, pady=5)
         else:
             self._build_value_label(
                 row,
@@ -562,11 +603,12 @@ class CodexMonitorApp:
                 daemon=True,
             ).start()
 
-    def refresh_ui(self) -> None:
+    def refresh_ui(self, skip_auto_fetch: bool = False) -> None:
         if self._timer_id:
             self.root.after_cancel(self._timer_id)
 
-        self.check_auto_fetch()
+        if not skip_auto_fetch:
+            self.check_auto_fetch()
         self._clear_account_rows()
 
         items = self.state.sorted_usage_items()
@@ -574,10 +616,10 @@ class CodexMonitorApp:
             empty_label = ctk.CTkLabel(
                 self.accounts_rows_frame,
                 text="No tracked accounts yet. Fetch current auth.json to load one.",
-                font=ctk.CTkFont(size=13),
+                font=ctk.CTkFont(size=12),
                 text_color=self._theme_tokens()["empty_fg"],
             )
-            empty_label.grid(row=0, column=0, sticky="ew", padx=12, pady=32)
+            empty_label.grid(row=0, column=0, sticky="ew", padx=10, pady=20)
         else:
             now_ts = datetime.now().timestamp()
             for index, (email, data) in enumerate(items):
