@@ -54,3 +54,20 @@ python codex_monitor.py
 It will:
 
 - start the app from source on your machine
+
+## Project Structure
+
+The app is organized as a package:
+
+```text
+codex_monitor.py              # compatibility launcher
+codex_monitor_app/
+  main.py                     # app bootstrap
+  ui.py                       # Tkinter UI shell
+  services.py                 # state + auth file handling
+  api.py                      # HTTPS usage API client
+  storage.py                  # local persistence/migrations
+  watcher.py                  # watchdog file observer
+  formatters.py               # UI display formatting helpers
+  config.py                   # constants and settings
+```
