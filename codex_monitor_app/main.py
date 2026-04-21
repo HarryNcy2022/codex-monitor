@@ -5,7 +5,7 @@ from .ui import CodexMonitorApp
 
 def main() -> None:
     ctk.set_appearance_mode("system")
-    ctk.set_default_color_theme("green")
+    ctk.set_default_color_theme("blue")
 
     root = ctk.CTk()
     CodexMonitorApp(root)

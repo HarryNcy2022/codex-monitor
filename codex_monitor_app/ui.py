@@ -78,41 +78,49 @@ class CodexMonitorApp:
     def _theme_tokens(self) -> Dict[str, str]:
         if ctk.get_appearance_mode().lower() == "dark":
             return {
-                "app_bg": "#09111E",
-                "card": "#101A2B",
-                "card_alt": "#0F172A",
-                "text": "#F8FAFC",
-                "muted": "#94A3B8",
-                "border": "#1E293B",
-                "table_shell": "#0B1425",
-                "table_fg": "#E2E8F0",
-                "heading_bg": "#132238",
-                "heading_fg": "#F8FAFC",
-                "selection_bg": "#1D4ED8",
-                "row_even": "#0F172A",
-                "row_odd": "#111D33",
-                "current_bg": "#DCFCE7",
-                "current_fg": "#166534",
-                "empty_fg": "#CBD5E1",
+                "app_bg": "#151718",
+                "card": "#1A1D1E",
+                "text": "#ECEDEE",
+                "muted": "#9BA1A6",
+                "border": "#313538",
+                "table_shell": "#1A1D1E",
+                "table_fg": "#ECEDEE",
+                "header_bg": "#202425",
+                "header_fg": "#ECEDEE",
+                "selection_bg": "#1F2C5C",
+                "control_bg": "#2F4EB2",
+                "control_hover": "#3E63DD",
+                "control_fg": "#EEF1FD",
+                "scrollbar_thumb": "#3A3F42",
+                "scrollbar_thumb_hover": "#697177",
+                "row_even": "#1A1D1E",
+                "row_odd": "#202425",
+                "current_bg": "#113123",
+                "current_fg": "#E5FBEB",
+                "empty_fg": "#9BA1A6",
             }
 
         return {
-            "app_bg": "#F3F7FB",
+            "app_bg": "#FBFCFD",
             "card": "#FFFFFF",
-            "card_alt": "#F8FAFC",
-            "text": "#0F172A",
-            "muted": "#475569",
-            "border": "#D7E2EE",
-            "table_shell": "#EEF4FA",
-            "table_fg": "#0F172A",
-            "heading_bg": "#E1EDF7",
-            "heading_fg": "#0F172A",
-            "selection_bg": "#CFE3F8",
+            "text": "#11181C",
+            "muted": "#687076",
+            "border": "#DFE3E6",
+            "table_shell": "#FFFFFF",
+            "table_fg": "#11181C",
+            "header_bg": "#F8F9FA",
+            "header_fg": "#11181C",
+            "selection_bg": "#D9E2FC",
+            "control_bg": "#3E63DD",
+            "control_hover": "#3A5CCC",
+            "control_fg": "#FFFFFF",
+            "scrollbar_thumb": "#C1C8CD",
+            "scrollbar_thumb_hover": "#889096",
             "row_even": "#FFFFFF",
-            "row_odd": "#F7FAFD",
-            "current_bg": "#DCFCE7",
-            "current_fg": "#166534",
-            "empty_fg": "#64748B",
+            "row_odd": "#F8F9FA",
+            "current_bg": "#E9F9EE",
+            "current_fg": "#18794E",
+            "empty_fg": "#7E868C",
         }
 
     def setup_ui(self) -> None:
@@ -140,7 +148,7 @@ class CodexMonitorApp:
         header_frame = ctk.CTkFrame(
             accounts_shell,
             corner_radius=10,
-            fg_color=tokens["heading_bg"],
+            fg_color=tokens["header_bg"],
         )
         header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 3))
         self._configure_account_columns(header_frame)
@@ -172,8 +180,8 @@ class CodexMonitorApp:
             orientation="vertical",
             command=self.accounts_canvas.yview,
             fg_color=tokens["table_shell"],
-            button_color=tokens["heading_bg"],
-            button_hover_color=tokens["selection_bg"],
+            button_color=tokens["scrollbar_thumb"],
+            button_hover_color=tokens["scrollbar_thumb_hover"],
         )
         accounts_scrollbar.grid(row=0, column=1, sticky="ns", padx=(8, 0))
         self.accounts_canvas.configure(yscrollcommand=accounts_scrollbar.set)
@@ -201,7 +209,7 @@ class CodexMonitorApp:
         status_frame = ctk.CTkFrame(
             self.root,
             corner_radius=12,
-            fg_color=tokens["card_alt"],
+            fg_color=tokens["card"],
             border_width=1,
             border_color=tokens["border"],
         )
@@ -217,7 +225,7 @@ class CodexMonitorApp:
             borderwidth=0,
             highlightthickness=0,
             relief="flat",
-            background=tokens["card_alt"],
+            background=tokens["card"],
             foreground=tokens["muted"],
             insertbackground=tokens["text"],
             selectbackground=tokens["selection_bg"],
@@ -233,9 +241,9 @@ class CodexMonitorApp:
             height=34,
             width=34,
             font=ctk.CTkFont(size=15, weight="bold"),
-            fg_color=tokens["heading_bg"],
-            hover_color=tokens["selection_bg"],
-            text_color=tokens["heading_fg"],
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
         )
         self.copy_status_button.grid(row=0, column=1, sticky="w", padx=(0, 10), pady=7)
 
@@ -257,10 +265,10 @@ class CodexMonitorApp:
             dynamic_resizing=False,
             font=ctk.CTkFont(size=11, weight="bold"),
             dropdown_font=ctk.CTkFont(size=11),
-            fg_color=tokens["heading_bg"],
-            button_color=tokens["heading_bg"],
-            button_hover_color=tokens["selection_bg"],
-            text_color=tokens["heading_fg"],
+            fg_color=tokens["control_bg"],
+            button_color=tokens["control_bg"],
+            button_hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
             anchor="w",
         )
         self.auto_fetch_menu.grid(row=0, column=3, sticky="e", padx=(0, 6), pady=7)
@@ -273,6 +281,9 @@ class CodexMonitorApp:
             height=34,
             width=34,
             font=ctk.CTkFont(size=16, weight="bold"),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
         )
         self.manual_button.grid(row=0, column=4, sticky="e", padx=(0, 6), pady=7)
 
@@ -284,9 +295,9 @@ class CodexMonitorApp:
             height=34,
             width=82,
             font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=tokens["heading_bg"],
-            hover_color=tokens["selection_bg"],
-            text_color=tokens["heading_fg"],
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
         )
         self.update_button.grid(row=0, column=5, sticky="e", padx=(0, 6), pady=7)
 
@@ -298,9 +309,9 @@ class CodexMonitorApp:
             height=34,
             width=34,
             font=ctk.CTkFont(size=15, weight="bold"),
-            fg_color=tokens["heading_bg"],
-            hover_color=tokens["selection_bg"],
-            text_color=tokens["heading_fg"],
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
         )
         self.theme_button.grid(row=0, column=6, sticky="e", padx=(0, 10), pady=7)
         self._sync_status_textbox()
@@ -357,7 +368,7 @@ class CodexMonitorApp:
             text=text,
             anchor=anchor,
             font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=tokens["heading_fg"],
+            text_color=tokens["header_fg"],
         )
         label.grid(row=0, column=column, sticky="ew", padx=10, pady=9)
 
