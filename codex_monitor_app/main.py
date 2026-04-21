@@ -1,10 +1,13 @@
-import tkinter as tk
+import customtkinter as ctk
 
 from .ui import CodexMonitorApp
 
 
 def main() -> None:
-    root = tk.Tk()
+    ctk.set_appearance_mode("system")
+    ctk.set_default_color_theme("green")
+
+    root = ctk.CTk()
     CodexMonitorApp(root)
     root.lift()
     root.attributes("-topmost", True)

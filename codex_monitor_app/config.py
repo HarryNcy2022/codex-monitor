@@ -2,8 +2,8 @@ import os
 
 
 APP_TITLE = "Codex Account Monitor"
-WINDOW_GEOMETRY = "850x350"
-WINDOW_MIN_SIZE = (700, 250)
+WINDOW_GEOMETRY = "980x460"
+WINDOW_MIN_SIZE = (780, 320)
 
 # Automatically resolves to /Users/<your_username>/.codex/auth.json
 AUTH_FILE_PATH = os.path.expanduser("~/.codex/auth.json")

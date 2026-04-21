@@ -1,6 +1,6 @@
 # Codex Account Monitor
 
-A lightweight, native macOS desktop application to monitor your API usage and quotas.
+A lightweight, native macOS desktop application to monitor your API usage and quotas with a modern CustomTkinter UI.
 
 ## Download
 
@@ -63,7 +63,7 @@ The app is organized as a package:
 codex_monitor.py              # compatibility launcher
 codex_monitor_app/
   main.py                     # app bootstrap
-  ui.py                       # Tkinter UI shell
+  ui.py                       # CustomTkinter UI shell
   services.py                 # state + auth file handling
   api.py                      # HTTPS usage API client
   storage.py                  # local persistence/migrations
