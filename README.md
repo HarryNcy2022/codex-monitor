@@ -6,6 +6,8 @@ A lightweight, native macOS desktop application to monitor your API usage and qu
 
 Go to the [Releases page](../../releases/latest) to download the latest `CodexMonitor-macOS.zip`.
 
+For the smoothest future updates, keep `CodexMonitor.app` in `~/Applications`.
+
 If the zip is in your `~/Downloads` folder, you can run this command:
 
 ```bash
@@ -17,6 +19,14 @@ It will:
 - unzip `CodexMonitor-macOS.zip` into `~/Downloads`
 - remove the macOS quarantine flag from `CodexMonitor.app`
 - open the app immediately
+
+If you want the in-app `Update` button to replace the existing app in one click, move it once:
+
+```bash
+mkdir -p ~/Applications
+mv ~/Downloads/CodexMonitor.app ~/Applications/CodexMonitor.app
+open ~/Applications/CodexMonitor.app
+```
 
 If you prefer to do it step by step, run:
 

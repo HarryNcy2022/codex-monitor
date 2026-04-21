@@ -1,9 +1,22 @@
 import os
 
+from .version import get_app_version
+
 
 APP_TITLE = "Codex Account Monitor"
+APP_NAME = "CodexMonitor"
+APP_VERSION = get_app_version()
 WINDOW_GEOMETRY = "980x460"
-WINDOW_MIN_SIZE = (620, 320)
+WINDOW_MIN_SIZE = (540, 320)
+UPDATE_CHECK_INTERVAL_SECONDS = 21600
+
+GITHUB_REPOSITORY = "koodev24/codex-monitor"
+RELEASE_ASSET_NAME = "CodexMonitor-macOS.zip"
+RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
+RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
+DEFAULT_INSTALL_DIR = os.path.expanduser("~/Applications")
+DEFAULT_APP_INSTALL_PATH = os.path.join(DEFAULT_INSTALL_DIR, f"{APP_NAME}.app")
+HTTP_USER_AGENT = f"{APP_NAME}/{APP_VERSION}"
 
 # Automatically resolves to /Users/<your_username>/.codex/auth.json
 AUTH_FILE_PATH = os.path.expanduser("~/.codex/auth.json")

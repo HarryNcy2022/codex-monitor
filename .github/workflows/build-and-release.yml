@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -29,10 +31,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build macOS App with PyInstaller
-        # This matches the command in your script's docstring
+      - name: Resolve App Version
         run: |
-          pyinstaller --windowed --onefile --noconfirm --name "CodexMonitor" codex_monitor.py
+          echo "CODEX_MONITOR_VERSION=$(python -c 'from codex_monitor_app.version import get_build_version; print(get_build_version())')" >> "$GITHUB_ENV"
+
+      - name: Build macOS App with PyInstaller
+        run: |
+          pyinstaller --noconfirm CodexMonitor.spec
 
       - name: Zip the .app bundle
         # GitHub Releases cannot accept raw folders. Mac .app files are actually folders.

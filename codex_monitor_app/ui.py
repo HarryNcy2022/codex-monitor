@@ -1,4 +1,5 @@
 import json
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -10,16 +11,26 @@ import customtkinter as ctk
 
 from .api import UsageApiClient
 from .config import (
+    APP_VERSION,
     APP_TITLE,
     AUTH_DIR,
     AUTH_FILE_PATH,
     AUTO_FETCH_OPTIONS,
+    UPDATE_CHECK_INTERVAL_SECONDS,
     WINDOW_GEOMETRY,
     WINDOW_MIN_SIZE,
 )
 from .formatters import format_quota_left, format_reset_display
 from .services import AuthFileService, MonitorStateService
 from .storage import UsageStorage
+from .updater import (
+    ReleaseInfo,
+    UpdateError,
+    fetch_latest_release,
+    install_update_and_restart,
+    is_newer_version,
+    prepare_update,
+)
 from .watcher import AuthFileWatcher
 
 
@@ -44,14 +55,24 @@ class CodexMonitorApp:
         self._last_file_event_time = 0.0
         self._pending_fetches = 0
         self._accounts_window_id: Optional[int] = None
+        self._update_check_timer_id: Optional[str] = None
         self.manual_button: Optional[ctk.CTkButton] = None
+        self.copy_status_button: Optional[ctk.CTkButton] = None
+        self.auto_fetch_label: Optional[ctk.CTkLabel] = None
+        self.auto_fetch_menu: Optional[ctk.CTkOptionMenu] = None
+        self.status_textbox: Optional[tk.Text] = None
+        self.update_button: Optional[ctk.CTkButton] = None
         self.theme_button: Optional[ctk.CTkButton] = None
+        self._available_release: Optional[ReleaseInfo] = None
+        self._update_check_in_progress = False
+        self._update_in_progress = False
 
         self.setup_ui()
         self.refresh_ui()
 
         self.auth_watcher.start()
         self.root.after(0, self.initial_fetch_on_startup)
+        self.root.after(1200, self.check_for_updates_silently)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def _theme_tokens(self) -> Dict[str, str]:
@@ -124,9 +145,8 @@ class CodexMonitorApp:
         header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 3))
         self._configure_account_columns(header_frame)
         self._build_header_cell(header_frame, "Account Email", 0, "w")
-        self._build_header_cell(header_frame, "Quota Left", 1, "w")
+        self._build_header_cell(header_frame, "Quota", 1, "w")
         self._build_header_cell(header_frame, "Reset Time", 2, "w")
-        self._build_header_cell(header_frame, "Auto-Fetch", 3, "w")
 
         body_frame = ctk.CTkFrame(
             accounts_shell,
@@ -189,15 +209,61 @@ class CodexMonitorApp:
         status_frame.grid_columnconfigure(0, weight=1)
 
         self.status_var = tk.StringVar(value=f"Watching: {AUTH_FILE_PATH} (watchdog)")
-        status_label = ctk.CTkLabel(
+        self.status_var.trace_add("write", self._sync_status_textbox)
+        self.status_textbox = tk.Text(
             status_frame,
-            textvariable=self.status_var,
-            anchor="w",
-            justify="left",
-            font=ctk.CTkFont(size=11),
+            height=2,
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=0,
+            relief="flat",
+            background=tokens["card_alt"],
+            foreground=tokens["muted"],
+            insertbackground=tokens["text"],
+            selectbackground=tokens["selection_bg"],
+            font=("TkDefaultFont", 11),
+        )
+        self.status_textbox.grid(row=0, column=0, sticky="ew", padx=(12, 0), pady=9)
+
+        self.copy_status_button = ctk.CTkButton(
+            status_frame,
+            text="⧉",
+            command=self.copy_status_message,
+            corner_radius=11,
+            height=34,
+            width=34,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color=tokens["heading_bg"],
+            hover_color=tokens["selection_bg"],
+            text_color=tokens["heading_fg"],
+        )
+        self.copy_status_button.grid(row=0, column=1, sticky="w", padx=(0, 10), pady=7)
+
+        self.auto_fetch_label = ctk.CTkLabel(
+            status_frame,
+            text="Auto Fetch",
+            font=ctk.CTkFont(size=10, weight="bold"),
             text_color=tokens["muted"],
         )
-        status_label.grid(row=0, column=0, sticky="ew", padx=(12, 10), pady=9)
+        self.auto_fetch_label.grid(row=0, column=2, sticky="e", padx=(0, 5), pady=7)
+
+        self.auto_fetch_menu = ctk.CTkOptionMenu(
+            status_frame,
+            values=AUTO_FETCH_OPTIONS,
+            command=self.save_current_auto_fetch_value,
+            width=88,
+            height=32,
+            corner_radius=10,
+            dynamic_resizing=False,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            dropdown_font=ctk.CTkFont(size=11),
+            fg_color=tokens["heading_bg"],
+            button_color=tokens["heading_bg"],
+            button_hover_color=tokens["selection_bg"],
+            text_color=tokens["heading_fg"],
+            anchor="w",
+        )
+        self.auto_fetch_menu.grid(row=0, column=3, sticky="e", padx=(0, 6), pady=7)
 
         self.manual_button = ctk.CTkButton(
             status_frame,
@@ -208,7 +274,21 @@ class CodexMonitorApp:
             width=34,
             font=ctk.CTkFont(size=16, weight="bold"),
         )
-        self.manual_button.grid(row=0, column=1, sticky="e", padx=(0, 6), pady=7)
+        self.manual_button.grid(row=0, column=4, sticky="e", padx=(0, 6), pady=7)
+
+        self.update_button = ctk.CTkButton(
+            status_frame,
+            text="Update",
+            command=self.update_application,
+            corner_radius=11,
+            height=34,
+            width=82,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=tokens["heading_bg"],
+            hover_color=tokens["selection_bg"],
+            text_color=tokens["heading_fg"],
+        )
+        self.update_button.grid(row=0, column=5, sticky="e", padx=(0, 6), pady=7)
 
         self.theme_button = ctk.CTkButton(
             status_frame,
@@ -222,14 +302,14 @@ class CodexMonitorApp:
             hover_color=tokens["selection_bg"],
             text_color=tokens["heading_fg"],
         )
-        self.theme_button.grid(row=0, column=2, sticky="e", padx=(0, 10), pady=7)
+        self.theme_button.grid(row=0, column=6, sticky="e", padx=(0, 10), pady=7)
+        self._sync_status_textbox()
         self._update_manual_button_state()
 
     def _configure_account_columns(self, frame: ctk.CTkFrame) -> None:
-        frame.grid_columnconfigure(0, weight=5, uniform="account-cols")
+        frame.grid_columnconfigure(0, weight=6, uniform="account-cols")
         frame.grid_columnconfigure(1, weight=2, uniform="account-cols")
         frame.grid_columnconfigure(2, weight=4, uniform="account-cols")
-        frame.grid_columnconfigure(3, weight=3, uniform="account-cols")
 
     def _fetch_button_icon(self) -> str:
         return "↻"
@@ -244,6 +324,11 @@ class CodexMonitorApp:
         for widget in self.root.winfo_children():
             widget.destroy()
         self.manual_button = None
+        self.copy_status_button = None
+        self.auto_fetch_label = None
+        self.auto_fetch_menu = None
+        self.status_textbox = None
+        self.update_button = None
         self.theme_button = None
         self._accounts_window_id = None
         self.setup_ui()
@@ -362,6 +447,45 @@ class CodexMonitorApp:
         bbox = self.accounts_canvas.bbox("all")
         self.accounts_canvas.configure(scrollregion=bbox or (0, 0, 0, 0))
 
+    def _sync_status_textbox(self, *_args: object) -> None:
+        if not self.status_textbox or not hasattr(self, "status_var"):
+            return
+
+        message = self.status_var.get()
+        self.status_textbox.configure(state="normal")
+        self.status_textbox.delete("1.0", "end")
+        self.status_textbox.insert("1.0", message)
+        self.status_textbox.configure(state="disabled")
+
+    def copy_status_message(self) -> None:
+        message = self.status_var.get() if hasattr(self, "status_var") else ""
+        if not message:
+            return
+
+        self.root.clipboard_clear()
+        self.root.clipboard_append(message)
+
+    def _schedule_next_update_check(self) -> None:
+        if self._update_check_timer_id:
+            self.root.after_cancel(self._update_check_timer_id)
+
+        self._update_check_timer_id = self.root.after(
+            UPDATE_CHECK_INTERVAL_SECONDS * 1000,
+            self.check_for_updates_silently,
+        )
+
+    def _set_update_button_visibility(self) -> None:
+        if not self.update_button or not self.theme_button:
+            return
+
+        show_button = self._available_release is not None or self._update_in_progress
+        if show_button:
+            self.update_button.grid()
+            self.theme_button.grid_configure(column=6)
+        else:
+            self.update_button.grid_remove()
+            self.theme_button.grid_configure(column=5)
+
     def _update_manual_button_state(self) -> None:
         if not self.manual_button:
             return
@@ -370,6 +494,30 @@ class CodexMonitorApp:
             self.manual_button.configure(state="disabled", text="…")
         else:
             self.manual_button.configure(state="normal", text=self._fetch_button_icon())
+
+        if self.update_button:
+            if self._update_in_progress:
+                self.update_button.configure(state="disabled", text="...")
+            elif self._available_release:
+                self.update_button.configure(state="normal", text="Update")
+            else:
+                self.update_button.configure(state="normal", text="Update")
+
+        current_email = self.state.current_account_email
+        if self.auto_fetch_menu:
+            if current_email:
+                self.auto_fetch_menu.configure(state="normal")
+                self.auto_fetch_menu.set(self.state.get_display_auto_fetch(current_email))
+            else:
+                self.auto_fetch_menu.configure(state="disabled")
+                self.auto_fetch_menu.set("None")
+
+        if self.auto_fetch_label:
+            self.auto_fetch_label.configure(
+                text_color=self._theme_tokens()["muted"],
+            )
+
+        self._set_update_button_visibility()
 
         if self.theme_button:
             self.theme_button.configure(text=self._appearance_toggle_icon())
@@ -389,12 +537,21 @@ class CodexMonitorApp:
             self.refresh_ui()
             self.status_var.set(f"Auto-fetch for {email} set to {new_value}.")
 
+    def save_current_auto_fetch_value(self, new_value: str) -> None:
+        email = self.state.current_account_email
+        if not email:
+            if self.auto_fetch_menu:
+                self.auto_fetch_menu.set("None")
+            self.status_var.set("No active account to attach auto-fetch to.")
+            return
+
+        self.save_auto_fetch_value(email, new_value)
+
     def _build_account_row(
         self,
         email: str,
         quota_left: str,
         reset_display: str,
-        auto_fetch: str,
         is_current: bool,
         index: int,
     ) -> None:
@@ -437,36 +594,6 @@ class CodexMonitorApp:
             anchor="w",
         )
 
-        if is_current:
-            auto_fetch_menu = ctk.CTkOptionMenu(
-                row,
-                values=AUTO_FETCH_OPTIONS,
-                command=lambda choice, account_email=email: (
-                    self.save_auto_fetch_value(account_email, choice)
-                ),
-                width=136,
-                height=28,
-                corner_radius=9,
-                dynamic_resizing=False,
-                font=ctk.CTkFont(size=11, weight="bold"),
-                dropdown_font=ctk.CTkFont(size=11),
-                fg_color=tokens["heading_bg"],
-                button_color=tokens["heading_bg"],
-                button_hover_color=tokens["selection_bg"],
-                text_color=tokens["heading_fg"],
-                anchor="w",
-            )
-            auto_fetch_menu.set(auto_fetch)
-            auto_fetch_menu.grid(row=0, column=3, sticky="w", padx=10, pady=5)
-        else:
-            self._build_value_label(
-                row,
-                "-",
-                row_text,
-                3,
-                anchor="w",
-            )
-
     def initial_fetch_on_startup(self) -> None:
         self.status_var.set("Checking current auth.json on startup...")
         self.process_auth_file()
@@ -486,6 +613,116 @@ class CodexMonitorApp:
     def manual_fetch(self) -> None:
         self.status_var.set("Manual fetch initiated...")
         self.process_auth_file()
+
+    def check_for_updates_silently(self) -> None:
+        if self._update_check_in_progress or self._update_in_progress:
+            return
+
+        self._update_check_in_progress = True
+        threading.Thread(target=self._bg_check_for_updates, daemon=True).start()
+
+    def _bg_check_for_updates(self) -> None:
+        release: Optional[ReleaseInfo] = None
+        error_message: Optional[str] = None
+
+        try:
+            latest_release = fetch_latest_release()
+            if is_newer_version(latest_release.version, APP_VERSION):
+                release = latest_release
+        except urllib.error.HTTPError as error:
+            error_message = f"Update check failed with HTTP {error.code}."
+        except (urllib.error.URLError, TimeoutError) as error:
+            error_message = f"Network Error while checking for updates: {getattr(error, 'reason', str(error))}"
+        except UpdateError as error:
+            error_message = f"Update check error: {error}"
+        except Exception as error:
+            error_message = f"Unexpected update check error: {error}"
+
+        self.root.after(
+            0,
+            lambda r=release, e=error_message: self._finish_update_check(r, e),
+        )
+
+    def _finish_update_check(
+        self,
+        release: Optional[ReleaseInfo],
+        error_message: Optional[str],
+    ) -> None:
+        self._update_check_in_progress = False
+        if error_message:
+            resolved_release = self._available_release
+        else:
+            resolved_release = release
+
+        self._available_release = resolved_release
+
+        if resolved_release:
+            current_message = self.status_var.get()
+            if (
+                "Update available:" in current_message
+                or current_message.startswith("Watching: ")
+            ):
+                self.status_var.set(
+                    f"Update available: v{resolved_release.version}. Tap the button to install."
+                )
+        elif error_message and self.status_var.get().startswith("Watching: "):
+            self.status_var.set(error_message)
+
+        self._update_manual_button_state()
+        self._schedule_next_update_check()
+
+    def update_application(self) -> None:
+        if self._update_in_progress or not self._available_release:
+            return
+
+        self._update_in_progress = True
+        self.status_var.set(
+            f"Installing v{self._available_release.version} from v{APP_VERSION}..."
+        )
+        self._update_manual_button_state()
+        threading.Thread(target=self._bg_update_application, daemon=True).start()
+
+    def _bg_update_application(self) -> None:
+        should_close = False
+
+        try:
+            if not self._available_release:
+                message = f"You're already on the latest version (v{APP_VERSION})."
+            else:
+                release = self._available_release
+                source_app, target_app, temp_root = prepare_update(release)
+                install_update_and_restart(source_app, target_app, temp_root)
+                message = (
+                    f"Installing v{release.version} and reopening from {target_app}..."
+                )
+                should_close = True
+        except urllib.error.HTTPError as error:
+            message = f"Update check failed with HTTP {error.code}."
+        except (urllib.error.URLError, TimeoutError) as error:
+            message = f"Network Error while updating: {getattr(error, 'reason', str(error))}"
+        except subprocess.CalledProcessError:
+            message = "Update download succeeded, but extracting the app failed."
+        except UpdateError as error:
+            message = f"Update error: {error}"
+        except Exception as error:
+            message = f"Unexpected update error: {error}"
+
+        self.root.after(
+            0,
+            lambda m=message, close_after=should_close: self._finish_update(
+                m,
+                close_after,
+            ),
+        )
+
+    def _finish_update(self, status_message: str, close_after: bool = False) -> None:
+        self._update_in_progress = False
+        if close_after:
+            self._available_release = None
+        self.status_var.set(status_message)
+        self._update_manual_button_state()
+        if close_after:
+            self.root.after(500, self.on_closing)
 
     def process_auth_file(self) -> None:
         if not self.auth_file_service.auth_file_exists():
@@ -626,21 +863,18 @@ class CodexMonitorApp:
                 try:
                     reset_ts = data.get("reset_ts", 0)
                     used_percent = data.get("used_percent", 0)
-                    auto_fetch = self.state.get_display_auto_fetch(email)
                     is_current = email == self.state.current_account_email
                     display_text = format_reset_display(reset_ts, now_ts)
                     quota_left = format_quota_left(used_percent)
                 except Exception:
                     display_text = "Error"
                     quota_left = "Error"
-                    auto_fetch = "-"
                     is_current = email == self.state.current_account_email
 
                 self._build_account_row(
                     email=email,
                     quota_left=quota_left,
                     reset_display=display_text,
-                    auto_fetch=auto_fetch,
                     is_current=is_current,
                     index=index,
                 )
@@ -652,6 +886,9 @@ class CodexMonitorApp:
         if self._timer_id:
             self.root.after_cancel(self._timer_id)
             self._timer_id = None
+        if self._update_check_timer_id:
+            self.root.after_cancel(self._update_check_timer_id)
+            self._update_check_timer_id = None
 
         self.auth_watcher.stop()
         self.root.destroy()
