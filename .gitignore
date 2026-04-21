@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/
 *.spec
+!CodexMonitor.spec
 
 # macOS
 .DS_Store
