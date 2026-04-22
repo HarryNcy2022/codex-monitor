@@ -35,6 +35,12 @@ from .watcher import AuthFileWatcher
 
 
 class CodexMonitorApp:
+    TABLE_HEADER_PAD_Y = 5
+    TABLE_ROW_PAD_Y = 3
+    TABLE_ROW_GAP_Y = 0
+    TABLE_SCROLLBAR_WIDTH = 8
+    TABLE_SCROLLBAR_PAD_X = 4
+
     def __init__(self, root: ctk.CTk):
         self.root = root
         self.root.title(APP_TITLE)
@@ -151,10 +157,18 @@ class CodexMonitorApp:
             fg_color=tokens["header_bg"],
         )
         header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 3))
-        self._configure_account_columns(header_frame)
-        self._build_header_cell(header_frame, "Account Email", 0, "w")
-        self._build_header_cell(header_frame, "Quota", 1, "w")
-        self._build_header_cell(header_frame, "Reset Time", 2, "w")
+        header_frame.grid_columnconfigure(0, weight=1)
+        header_frame.grid_columnconfigure(1, minsize=self._table_scrollbar_gutter_width())
+
+        header_content = ctk.CTkFrame(
+            header_frame,
+            fg_color="transparent",
+        )
+        header_content.grid(row=0, column=0, sticky="ew")
+        self._configure_account_columns(header_content)
+        self._build_header_cell(header_content, "Account Email", 0, "w")
+        self._build_header_cell(header_content, "Quota", 1, "w")
+        self._build_header_cell(header_content, "Reset Time", 2, "w")
 
         body_frame = ctk.CTkFrame(
             accounts_shell,
@@ -179,11 +193,20 @@ class CodexMonitorApp:
             body_frame,
             orientation="vertical",
             command=self.accounts_canvas.yview,
+            width=self.TABLE_SCROLLBAR_WIDTH,
+            corner_radius=999,
+            border_spacing=0,
+            minimum_pixel_length=36,
             fg_color=tokens["table_shell"],
             button_color=tokens["scrollbar_thumb"],
             button_hover_color=tokens["scrollbar_thumb_hover"],
         )
-        accounts_scrollbar.grid(row=0, column=1, sticky="ns", padx=(8, 0))
+        accounts_scrollbar.grid(
+            row=0,
+            column=1,
+            sticky="ns",
+            padx=(self.TABLE_SCROLLBAR_PAD_X, 0),
+        )
         self.accounts_canvas.configure(yscrollcommand=accounts_scrollbar.set)
 
         self.accounts_rows_frame = ctk.CTkFrame(
@@ -322,6 +345,9 @@ class CodexMonitorApp:
         frame.grid_columnconfigure(1, weight=2, uniform="account-cols")
         frame.grid_columnconfigure(2, weight=4, uniform="account-cols")
 
+    def _table_scrollbar_gutter_width(self) -> int:
+        return self.TABLE_SCROLLBAR_WIDTH + self.TABLE_SCROLLBAR_PAD_X
+
     def _fetch_button_icon(self) -> str:
         return "↻"
 
@@ -370,7 +396,13 @@ class CodexMonitorApp:
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=tokens["header_fg"],
         )
-        label.grid(row=0, column=column, sticky="ew", padx=10, pady=9)
+        label.grid(
+            row=0,
+            column=column,
+            sticky="ew",
+            padx=10,
+            pady=self.TABLE_HEADER_PAD_Y,
+        )
 
     def _build_value_label(
         self,
@@ -388,7 +420,13 @@ class CodexMonitorApp:
             font=ctk.CTkFont(size=11, weight="bold" if bold else "normal"),
             text_color=text_color,
         )
-        label.grid(row=0, column=column, sticky="ew", padx=10, pady=8)
+        label.grid(
+            row=0,
+            column=column,
+            sticky="ew",
+            padx=10,
+            pady=self.TABLE_ROW_PAD_Y,
+        )
 
     def _clear_account_rows(self) -> None:
         for widget in self.accounts_rows_frame.winfo_children():
@@ -578,7 +616,13 @@ class CodexMonitorApp:
             fg_color=row_bg,
             corner_radius=10,
         )
-        row.grid(row=index, column=0, sticky="ew", padx=1, pady=2)
+        row.grid(
+            row=index,
+            column=0,
+            sticky="ew",
+            padx=1,
+            pady=self.TABLE_ROW_GAP_Y,
+        )
         self._configure_account_columns(row)
 
         self._build_value_label(
