@@ -40,6 +40,9 @@ class CodexMonitorApp:
     TABLE_ROW_GAP_Y = 0
     TABLE_SCROLLBAR_WIDTH = 8
     TABLE_SCROLLBAR_PAD_X = 4
+    AUTH_EVENT_SETTLE_MS = 250
+    AUTH_PARSE_RETRY_MS = 300
+    MAX_AUTH_PARSE_RETRIES = 4
 
     def __init__(self, root: ctk.CTk):
         self.root = root
@@ -58,10 +61,12 @@ class CodexMonitorApp:
         )
 
         self._timer_id: Optional[str] = None
-        self._last_file_event_time = 0.0
         self._pending_fetches = 0
         self._accounts_window_id: Optional[int] = None
         self._update_check_timer_id: Optional[str] = None
+        self._auth_change_job: Optional[str] = None
+        self._auth_retry_job: Optional[str] = None
+        self._auth_retry_attempts = 0
         self.manual_button: Optional[ctk.CTkButton] = None
         self.copy_status_button: Optional[ctk.CTkButton] = None
         self.auto_fetch_label: Optional[ctk.CTkLabel] = None
@@ -654,16 +659,53 @@ class CodexMonitorApp:
         self.process_auth_file()
 
     def on_file_changed(self) -> None:
-        current_time = time.monotonic()
-        if current_time - self._last_file_event_time < 1.0:
-            return
+        self.root.after(0, self._schedule_auth_refresh)
 
-        self._last_file_event_time = current_time
-        self.root.after(0, self._handle_file_changed)
+    def _schedule_auth_refresh(self) -> None:
+        if self._auth_retry_job:
+            self.root.after_cancel(self._auth_retry_job)
+            self._auth_retry_job = None
+
+        if self._auth_change_job:
+            self.root.after_cancel(self._auth_change_job)
+
+        self._auth_change_job = self.root.after(
+            self.AUTH_EVENT_SETTLE_MS,
+            self._handle_file_changed,
+        )
 
     def _handle_file_changed(self) -> None:
+        self._auth_change_job = None
+        self._auth_retry_attempts = 0
         self.status_var.set("Auth file changed. Fetching new quota...")
         self.process_auth_file()
+
+    def _schedule_auth_parse_retry(self) -> None:
+        if self._auth_retry_attempts >= self.MAX_AUTH_PARSE_RETRIES:
+            self.status_var.set(
+                "auth.json is still invalid. Waiting for the next file change."
+            )
+            self._auth_retry_job = None
+            return
+
+        self._auth_retry_attempts += 1
+        self.status_var.set(
+            f"auth.json is mid-write. Retrying read ({self._auth_retry_attempts}/{self.MAX_AUTH_PARSE_RETRIES})..."
+        )
+        self._auth_retry_job = self.root.after(
+            self.AUTH_PARSE_RETRY_MS,
+            self._retry_process_auth_file,
+        )
+
+    def _retry_process_auth_file(self) -> None:
+        self._auth_retry_job = None
+        self.process_auth_file()
+
+    def _reset_auth_retry_state(self) -> None:
+        self._auth_retry_attempts = 0
+        if self._auth_retry_job:
+            self.root.after_cancel(self._auth_retry_job)
+            self._auth_retry_job = None
 
     def manual_fetch(self) -> None:
         self.status_var.set("Manual fetch initiated...")
@@ -781,11 +823,15 @@ class CodexMonitorApp:
 
     def process_auth_file(self) -> None:
         if not self.auth_file_service.auth_file_exists():
+            self._reset_auth_retry_state()
             email = self.state.current_account_email
-            jwt = self.state.session_tokens.get(email) if email else None
+            jwt = self.state.get_latest_jwt_for_fetch(email)
 
-            if email and jwt:
-                self._begin_fetch(f"Logout detected. Taking final snapshot for {email}...")
+            if jwt:
+                account_label = email or "current account"
+                self._begin_fetch(
+                    f"Logout detected. Taking final snapshot for {account_label}..."
+                )
                 threading.Thread(
                     target=self._final_snapshot_and_clear,
                     args=(email, jwt),
@@ -800,6 +846,8 @@ class CodexMonitorApp:
         try:
             jwt = self.auth_file_service.load_access_token()
             if jwt:
+                self._reset_auth_retry_state()
+                self.state.remember_auth_jwt(jwt)
                 self._begin_fetch("Fetching quota from current auth.json...")
                 threading.Thread(
                     target=self._bg_fetch_single,
@@ -807,16 +855,29 @@ class CodexMonitorApp:
                     daemon=True,
                 ).start()
             else:
-                if self.state.clear_session_credentials():
-                    self.root.after_idle(self.refresh_ui)
-                self.status_var.set(
-                    "No access_token found in auth.json. Logged out from Codex."
-                )
+                self._reset_auth_retry_state()
+                email = self.state.current_account_email
+                latest_jwt = self.state.get_latest_jwt_for_fetch(email)
+                if latest_jwt:
+                    account_label = email or "current account"
+                    self._begin_fetch(
+                        f"Logout detected. Taking final snapshot for {account_label}..."
+                    )
+                    threading.Thread(
+                        target=self._final_snapshot_and_clear,
+                        args=(email, latest_jwt),
+                        daemon=True,
+                    ).start()
+                else:
+                    if self.state.clear_session_credentials():
+                        self.root.after_idle(self.refresh_ui)
+                    self.status_var.set(
+                        "No access_token found in auth.json. Logged out from Codex."
+                    )
         except json.JSONDecodeError:
-            self.status_var.set(
-                "auth.json is empty or invalid JSON. Retrying after the next file change."
-            )
+            self._schedule_auth_parse_retry()
         except Exception as error:
+            self._reset_auth_retry_state()
             self.status_var.set(f"Failed to parse auth.json: {error}")
 
     def _fetch_usage(self, jwt: str) -> dict:
@@ -858,18 +919,24 @@ class CodexMonitorApp:
 
         self.root.after(0, lambda m=message: self._finish_fetch(m))
 
-    def _final_snapshot_and_clear(self, email: str, jwt: str) -> None:
+    def _final_snapshot_and_clear(self, email: Optional[str], jwt: str) -> None:
+        account_label = email or "current account"
         try:
             response = self._fetch_usage(jwt)
             updated_email = self.state.apply_usage_response(response, jwt)
             if updated_email:
-                message = f"Logged out. Final snapshot successfully saved for {email}."
+                message = (
+                    f"Logged out. Final snapshot successfully saved for {updated_email}."
+                )
             else:
-                message = f"Logged out. Could not parse final snapshot for {email}."
+                message = (
+                    f"Logged out. Could not parse final snapshot for {account_label}."
+                )
         except urllib.error.HTTPError as error:
             if error.code == 401:
                 message = (
-                    f"Logged out. Token instantly revoked, kept last known quota for {email}."
+                    "Logged out. Token instantly revoked, kept last known quota for "
+                    f"{account_label}."
                 )
             else:
                 message = f"Logged out. HTTP {error.code} during final fetch."

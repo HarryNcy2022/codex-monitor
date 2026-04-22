@@ -14,6 +14,7 @@ class MonitorStateService:
         self.usage_map: UsageMap = storage.load()
         self.session_tokens: Dict[str, str] = {}
         self.current_account_email: Optional[str] = None
+        self.latest_auth_jwt: Optional[str] = None
 
     def save_data(self) -> None:
         try:
@@ -23,15 +24,22 @@ class MonitorStateService:
 
     def clear_session_credentials(self) -> bool:
         had_current_account = (
-            self.current_account_email is not None or bool(self.session_tokens)
+            self.current_account_email is not None
+            or bool(self.session_tokens)
+            or bool(self.latest_auth_jwt)
         )
         self.session_tokens.clear()
         self.current_account_email = None
+        self.latest_auth_jwt = None
         return had_current_account
+
+    def remember_auth_jwt(self, jwt: Optional[str]) -> None:
+        self.latest_auth_jwt = jwt
 
     def set_current_account(self, email: str, jwt: str) -> None:
         self.current_account_email = email
         self.session_tokens = {email: jwt}
+        self.latest_auth_jwt = jwt
 
         changed = False
         for account_email, data in self.usage_map.items():
@@ -105,6 +113,16 @@ class MonitorStateService:
             return None
 
         data["last_fetched"] = now
+        return self.latest_auth_jwt or self.session_tokens.get(current_email)
+
+    def get_latest_jwt_for_fetch(self, email: Optional[str] = None) -> Optional[str]:
+        if self.latest_auth_jwt:
+            return self.latest_auth_jwt
+        if email:
+            return self.session_tokens.get(email)
+        current_email = self.current_account_email
+        if not current_email:
+            return None
         return self.session_tokens.get(current_email)
 
     def sorted_usage_items(self) -> List[Tuple[str, dict]]:
