@@ -35,9 +35,9 @@ from .watcher import AuthFileWatcher
 
 
 class CodexMonitorApp:
-    TABLE_HEADER_PAD_Y = 5
-    TABLE_ROW_PAD_Y = 3
-    TABLE_ROW_GAP_Y = 0
+    TABLE_HEADER_PAD_Y = 6
+    TABLE_ROW_PAD_Y = 5
+    TABLE_ROW_GAP_Y = 4
     TABLE_SCROLLBAR_WIDTH = 8
     TABLE_SCROLLBAR_PAD_X = 4
     AUTH_EVENT_SETTLE_MS = 250
@@ -89,49 +89,53 @@ class CodexMonitorApp:
     def _theme_tokens(self) -> Dict[str, str]:
         if ctk.get_appearance_mode().lower() == "dark":
             return {
-                "app_bg": "#151718",
-                "card": "#1A1D1E",
-                "text": "#ECEDEE",
-                "muted": "#9BA1A6",
-                "border": "#313538",
-                "table_shell": "#1A1D1E",
-                "table_fg": "#ECEDEE",
-                "header_bg": "#202425",
-                "header_fg": "#ECEDEE",
-                "selection_bg": "#1F2C5C",
-                "control_bg": "#2F4EB2",
-                "control_hover": "#3E63DD",
-                "control_fg": "#EEF1FD",
-                "scrollbar_thumb": "#3A3F42",
-                "scrollbar_thumb_hover": "#697177",
-                "row_even": "#1A1D1E",
-                "row_odd": "#202425",
-                "current_bg": "#113123",
-                "current_fg": "#E5FBEB",
-                "empty_fg": "#9BA1A6",
+                "app_bg": "#0E141B",
+                "card": "#16202A",
+                "text": "#ECF3F8",
+                "muted": "#97A6B3",
+                "border": "#263341",
+                "table_shell": "#121A23",
+                "table_fg": "#ECF3F8",
+                "header_bg": "#1A2633",
+                "header_fg": "#F5FAFF",
+                "selection_bg": "#234C84",
+                "control_bg": "#3B82F6",
+                "control_hover": "#60A5FA",
+                "control_fg": "#F8FBFF",
+                "scrollbar_thumb": "#344352",
+                "scrollbar_thumb_hover": "#516273",
+                "row_even": "#131D27",
+                "row_odd": "#1A2530",
+                "row_border": "#263341",
+                "current_bg": "#123126",
+                "current_fg": "#E4FAEC",
+                "current_border": "#2D8A66",
+                "empty_fg": "#91A0AE",
             }
 
         return {
-            "app_bg": "#FBFCFD",
+            "app_bg": "#F3F7FB",
             "card": "#FFFFFF",
-            "text": "#11181C",
-            "muted": "#687076",
-            "border": "#DFE3E6",
+            "text": "#10202F",
+            "muted": "#5F7283",
+            "border": "#D7E1EB",
             "table_shell": "#FFFFFF",
-            "table_fg": "#11181C",
-            "header_bg": "#F8F9FA",
-            "header_fg": "#11181C",
-            "selection_bg": "#D9E2FC",
-            "control_bg": "#3E63DD",
-            "control_hover": "#3A5CCC",
+            "table_fg": "#10202F",
+            "header_bg": "#E8F0F7",
+            "header_fg": "#10202F",
+            "selection_bg": "#C9DAFF",
+            "control_bg": "#2563EB",
+            "control_hover": "#1D4ED8",
             "control_fg": "#FFFFFF",
-            "scrollbar_thumb": "#C1C8CD",
-            "scrollbar_thumb_hover": "#889096",
+            "scrollbar_thumb": "#B5C2CF",
+            "scrollbar_thumb_hover": "#7D90A3",
             "row_even": "#FFFFFF",
-            "row_odd": "#F8F9FA",
-            "current_bg": "#E9F9EE",
-            "current_fg": "#18794E",
-            "empty_fg": "#7E868C",
+            "row_odd": "#F1F6FB",
+            "row_border": "#DCE5EE",
+            "current_bg": "#E4F6EC",
+            "current_fg": "#12613F",
+            "current_border": "#87C8A8",
+            "empty_fg": "#748697",
         }
 
     def setup_ui(self) -> None:
@@ -146,7 +150,7 @@ class CodexMonitorApp:
 
         accounts_shell = ctk.CTkFrame(
             self.root,
-            corner_radius=14,
+            corner_radius=18,
             fg_color=tokens["table_shell"],
             border_width=1,
             border_color=tokens["border"],
@@ -158,22 +162,20 @@ class CodexMonitorApp:
 
         header_frame = ctk.CTkFrame(
             accounts_shell,
-            corner_radius=10,
+            corner_radius=12,
             fg_color=tokens["header_bg"],
+            border_width=1,
+            border_color=tokens["border"],
         )
         header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 3))
-        header_frame.grid_columnconfigure(0, weight=1)
-        header_frame.grid_columnconfigure(1, minsize=self._table_scrollbar_gutter_width())
-
-        header_content = ctk.CTkFrame(
-            header_frame,
-            fg_color="transparent",
+        self._configure_account_columns(header_frame)
+        header_frame.grid_columnconfigure(
+            3,
+            minsize=self._table_scrollbar_gutter_width(),
         )
-        header_content.grid(row=0, column=0, sticky="ew")
-        self._configure_account_columns(header_content)
-        self._build_header_cell(header_content, "Account Email", 0, "w")
-        self._build_header_cell(header_content, "Quota", 1, "w")
-        self._build_header_cell(header_content, "Reset Time", 2, "w")
+        self._build_header_cell(header_frame, "Account Email", 0, "w")
+        self._build_header_cell(header_frame, "Quota", 1, "w")
+        self._build_header_cell(header_frame, "Reset Time", 2, "w")
 
         body_frame = ctk.CTkFrame(
             accounts_shell,
@@ -236,7 +238,7 @@ class CodexMonitorApp:
 
         status_frame = ctk.CTkFrame(
             self.root,
-            corner_radius=12,
+            corner_radius=16,
             fg_color=tokens["card"],
             border_width=1,
             border_color=tokens["border"],
@@ -619,7 +621,9 @@ class CodexMonitorApp:
         row = ctk.CTkFrame(
             self.accounts_rows_frame,
             fg_color=row_bg,
-            corner_radius=10,
+            corner_radius=12,
+            border_width=1,
+            border_color=tokens["current_border"] if is_current else tokens["row_border"],
         )
         row.grid(
             row=index,
