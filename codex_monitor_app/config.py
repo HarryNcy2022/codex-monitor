@@ -24,6 +24,7 @@ AUTH_DIR = os.path.dirname(AUTH_FILE_PATH)
 
 # Lightweight local storage equivalent
 LOCAL_STORAGE_FILE = os.path.expanduser("~/.codex_usage_store.json")
+LOCAL_STORAGE_META_FILE = os.path.expanduser("~/.codex_usage_store.meta.json")
 
 # API URL
 USAGE_API_URL = "https://chatgpt.com/backend-api/wham/usage"

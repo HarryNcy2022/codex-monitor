@@ -81,6 +81,7 @@ class MonitorStateServiceTests(unittest.TestCase):
     def test_restores_current_account_from_saved_auto_fetch(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             storage_path = Path(temp_dir) / "usage.json"
+            meta_path = Path(temp_dir) / "usage.meta.json"
             storage_path.write_text(
                 json.dumps(
                     {
@@ -95,12 +96,60 @@ class MonitorStateServiceTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            state = MonitorStateService(UsageStorage(str(storage_path)))
+            state = MonitorStateService(UsageStorage(str(storage_path), str(meta_path)))
 
             self.assertEqual(state.current_account_email, "user@example.com")
             self.assertEqual(
                 state.get_display_auto_fetch("user@example.com"),
                 "1 Hr",
+            )
+
+    def test_migrates_mixed_storage_without_leaving_fake_accounts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_path = Path(temp_dir) / "usage.json"
+            meta_path = Path(temp_dir) / "usage.meta.json"
+            storage_path.write_text(
+                json.dumps(
+                    {
+                        "accounts": {
+                            "real@example.com": {
+                                "reset_ts": 100,
+                                "used_percent": 20,
+                                "auto_fetch": "1 Hr",
+                                "last_fetched": 10,
+                            }
+                        },
+                        "__meta__": {"current_account_email": "real@example.com"},
+                        "real@example.com": {
+                            "reset_ts": 200,
+                            "used_percent": 40,
+                            "auto_fetch": "None",
+                            "last_fetched": 30,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            storage = UsageStorage(str(storage_path), str(meta_path))
+            usage_map = storage.load()
+
+            self.assertEqual(sorted(usage_map.keys()), ["real@example.com"])
+            self.assertEqual(usage_map["real@example.com"]["used_percent"], 40)
+            self.assertEqual(usage_map["real@example.com"]["auto_fetch"], "1 Hr")
+            self.assertEqual(
+                storage.get_meta_value("current_account_email"),
+                "real@example.com",
+            )
+
+            repaired_storage = json.loads(storage_path.read_text(encoding="utf-8"))
+            repaired_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertNotIn("accounts", repaired_storage)
+            self.assertNotIn("__meta__", repaired_storage)
+            self.assertEqual(sorted(repaired_storage.keys()), ["real@example.com"])
+            self.assertEqual(
+                repaired_meta.get("current_account_email"),
+                "real@example.com",
             )
 
 
