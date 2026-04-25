@@ -43,6 +43,9 @@ class FakeState:
         self.current_account_email = current_email
         self.latest_jwt = latest_jwt
         self.clear_calls = 0
+        self.saved_auto_fetch = []
+        self.due_auto_fetch_jwt = None
+        self.usage_map = {}
 
     def get_latest_jwt_for_fetch(self, _email=None):
         return self.latest_jwt
@@ -53,6 +56,15 @@ class FakeState:
 
     def remember_auth_jwt(self, jwt):
         self.latest_jwt = jwt
+
+    def save_auto_fetch_value(self, email, new_value):
+        self.saved_auto_fetch.append((email, new_value))
+        account = self.usage_map.setdefault(email, {})
+        account["auto_fetch"] = new_value
+        return True
+
+    def get_due_auto_fetch_jwt(self, _now):
+        return self.due_auto_fetch_jwt
 
 
 class FakeAuthFileService:
@@ -238,6 +250,57 @@ class AuthFlowUiTests(unittest.TestCase):
         self.assertEqual(len(app.notifications), 1)
         self.assertIn("Detected Codex auth refresh", app.notifications[0][1])
         self.assertEqual(app.state.latest_jwt, "new-token")
+
+    def test_save_auto_fetch_value_notifies_when_user_changes_setting(self):
+        state = FakeState()
+        state.usage_map = {"user@example.com": {"auto_fetch": "None"}}
+        app = self._build_app(FakeAuthFileService(), state=state)
+
+        app.save_auto_fetch_value("user@example.com", "1 Hr")
+
+        self.assertEqual(state.saved_auto_fetch, [("user@example.com", "1 Hr")])
+        self.assertEqual(app.refresh_ui_calls, 1)
+        self.assertEqual(app.status_var.get(), "Auto-fetch for user@example.com set to 1 Hr.")
+        self.assertEqual(len(app.notifications), 1)
+        self.assertEqual(
+            app.notifications[0][1],
+            "Auto-fetch enabled for user@example.com: every 1 Hr.",
+        )
+
+    def test_check_auto_fetch_notifies_when_auto_fetch_is_triggered(self):
+        state = FakeState()
+        state.due_auto_fetch_jwt = "due-jwt"
+        state.usage_map = {"user@example.com": {"auto_fetch": "3 Hrs"}}
+        app = self._build_app(FakeAuthFileService(), state=state)
+        app._bg_fetch_single = lambda expected_email, jwt: app.finish_messages.append(
+            (expected_email, jwt)
+        )
+
+        original_thread = __import__("threading").Thread
+
+        class ImmediateThread:
+            def __init__(self, target=None, args=(), daemon=None):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                if self.target:
+                    self.target(*self.args)
+
+        import codex_monitor_app.ui as ui_module
+
+        ui_module.threading.Thread = ImmediateThread
+        try:
+            app.check_auto_fetch()
+        finally:
+            ui_module.threading.Thread = original_thread
+
+        self.assertEqual(
+            app.notifications[0][1],
+            "Auto-fetch triggered for user@example.com (3 Hrs).",
+        )
+        self.assertEqual(app.begin_messages, ["Auto-fetching quota for user@example.com..."])
+        self.assertEqual(app.finish_messages, [("user@example.com", "due-jwt")])
 
 
 if __name__ == "__main__":

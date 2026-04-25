@@ -604,6 +604,7 @@ class CodexMonitorApp:
         if self.state.save_auto_fetch_value(email, new_value):
             self.refresh_ui()
             self.status_var.set(f"Auto-fetch for {email} set to {new_value}.")
+            self._notify_auto_fetch_setting_changed(email, new_value)
 
     def save_current_auto_fetch_value(self, new_value: str) -> None:
         email = self.state.current_account_email
@@ -836,6 +837,20 @@ class CodexMonitorApp:
             APP_TITLE,
             f"Detected Codex auth refresh: {subtitle}",
         )
+
+    def _notify_auto_fetch_setting_changed(self, email: str, interval_label: str) -> None:
+        if interval_label == "None":
+            message = f"Auto-fetch turned off for {email}."
+        else:
+            message = f"Auto-fetch enabled for {email}: every {interval_label}."
+        self._notify_user(APP_TITLE, message)
+
+    def _notify_auto_fetch_triggered(self, email: str, interval_label: str) -> None:
+        if interval_label and interval_label != "None":
+            message = f"Auto-fetch triggered for {email} ({interval_label})."
+        else:
+            message = f"Auto-fetch triggered for {email}."
+        self._notify_user(APP_TITLE, message)
 
     def manual_fetch(self) -> None:
         self.status_var.set("Manual fetch initiated...")
@@ -1109,6 +1124,8 @@ class CodexMonitorApp:
         jwt = self.state.get_due_auto_fetch_jwt(time.time())
         if jwt:
             email = self.state.current_account_email or "current account"
+            interval_label = self.state.usage_map.get(email, {}).get("auto_fetch", "None")
+            self._notify_auto_fetch_triggered(email, interval_label)
             self._begin_fetch(f"Auto-fetching quota for {email}...")
             threading.Thread(
                 target=self._bg_fetch_single,
