@@ -1,11 +1,12 @@
 import json
+import os
 import subprocess
 import threading
 import time
 import tkinter as tk
 import urllib.error
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import customtkinter as ctk
 
@@ -21,6 +22,7 @@ from .config import (
     WINDOW_MIN_SIZE,
 )
 from .formatters import format_quota_left, format_reset_display
+from .models import AuthFileSnapshot
 from .services import AuthFileService, MonitorStateService
 from .storage import UsageStorage
 from .updater import (
@@ -40,9 +42,12 @@ class CodexMonitorApp:
     TABLE_ROW_GAP_Y = 4
     TABLE_SCROLLBAR_WIDTH = 8
     TABLE_SCROLLBAR_PAD_X = 4
+    AUTH_SIGNATURE_POLL_MS = 5000
     AUTH_EVENT_SETTLE_MS = 250
     AUTH_PARSE_RETRY_MS = 300
     MAX_AUTH_PARSE_RETRIES = 4
+    MISSING_TOKEN_RETRY_MS = 350
+    MAX_MISSING_TOKEN_RETRIES = 6
 
     def __init__(self, root: ctk.CTk):
         self.root = root
@@ -64,9 +69,15 @@ class CodexMonitorApp:
         self._pending_fetches = 0
         self._accounts_window_id: Optional[int] = None
         self._update_check_timer_id: Optional[str] = None
+        self._auth_poll_timer_id: Optional[str] = None
         self._auth_change_job: Optional[str] = None
         self._auth_retry_job: Optional[str] = None
         self._auth_retry_attempts = 0
+        self._missing_token_retry_job: Optional[str] = None
+        self._missing_token_retry_attempts = 0
+        self._last_seen_auth_signature = self._get_auth_file_signature()
+        self._last_auth_refresh_marker: Optional[str] = None
+        self._last_seen_access_token: Optional[str] = None
         self.manual_button: Optional[ctk.CTkButton] = None
         self.copy_status_button: Optional[ctk.CTkButton] = None
         self.auto_fetch_label: Optional[ctk.CTkLabel] = None
@@ -82,6 +93,7 @@ class CodexMonitorApp:
         self.refresh_ui()
 
         self.auth_watcher.start()
+        self._schedule_next_auth_poll()
         self.root.after(0, self.initial_fetch_on_startup)
         self.root.after(1200, self.check_for_updates_silently)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -665,10 +677,38 @@ class CodexMonitorApp:
     def on_file_changed(self) -> None:
         self.root.after(0, self._schedule_auth_refresh)
 
+    def _get_auth_file_signature(self) -> Optional[Tuple[int, int]]:
+        try:
+            stat_result = os.stat(self.auth_file_service.auth_file_path)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        except OSError:
+            return None
+
+        return (stat_result.st_mtime_ns, stat_result.st_size)
+
+    def _schedule_next_auth_poll(self) -> None:
+        if self._auth_poll_timer_id:
+            self.root.after_cancel(self._auth_poll_timer_id)
+        self._auth_poll_timer_id = self.root.after(
+            self.AUTH_SIGNATURE_POLL_MS,
+            self._poll_auth_file_state,
+        )
+
+    def _poll_auth_file_state(self) -> None:
+        self._auth_poll_timer_id = None
+        current_signature = self._get_auth_file_signature()
+        if current_signature != self._last_seen_auth_signature:
+            self._last_seen_auth_signature = current_signature
+            self._schedule_auth_refresh()
+        self._schedule_next_auth_poll()
+
     def _schedule_auth_refresh(self) -> None:
         if self._auth_retry_job:
             self.root.after_cancel(self._auth_retry_job)
             self._auth_retry_job = None
+
+        self._reset_missing_token_retry_state()
 
         if self._auth_change_job:
             self.root.after_cancel(self._auth_change_job)
@@ -681,6 +721,7 @@ class CodexMonitorApp:
     def _handle_file_changed(self) -> None:
         self._auth_change_job = None
         self._auth_retry_attempts = 0
+        self._last_seen_auth_signature = self._get_auth_file_signature()
         self.status_var.set("Auth file changed. Fetching new quota...")
         self.process_auth_file()
 
@@ -710,6 +751,91 @@ class CodexMonitorApp:
         if self._auth_retry_job:
             self.root.after_cancel(self._auth_retry_job)
             self._auth_retry_job = None
+
+    def _schedule_missing_token_retry(self) -> bool:
+        if self._missing_token_retry_attempts >= self.MAX_MISSING_TOKEN_RETRIES:
+            self._missing_token_retry_job = None
+            return False
+
+        self._missing_token_retry_attempts += 1
+        self.status_var.set(
+            "auth.json has no access_token yet. "
+            f"Retrying read ({self._missing_token_retry_attempts}/{self.MAX_MISSING_TOKEN_RETRIES})..."
+        )
+        self._missing_token_retry_job = self.root.after(
+            self.MISSING_TOKEN_RETRY_MS,
+            self._retry_missing_token_state,
+        )
+        return True
+
+    def _retry_missing_token_state(self) -> None:
+        self._missing_token_retry_job = None
+        self.process_auth_file()
+
+    def _reset_missing_token_retry_state(self) -> None:
+        self._missing_token_retry_attempts = 0
+        if self._missing_token_retry_job:
+            self.root.after_cancel(self._missing_token_retry_job)
+            self._missing_token_retry_job = None
+
+    def _auth_file_has_access_token(self) -> bool:
+        if not self.auth_file_service.auth_file_exists():
+            return False
+
+        try:
+            return bool(self.auth_file_service.load_access_token())
+        except (json.JSONDecodeError, OSError, ValueError, TypeError):
+            return False
+
+    def _snapshot_refresh_changed(self, snapshot: AuthFileSnapshot) -> bool:
+        current_access_token = snapshot.get("tokens", {}).get("access_token")
+        current_refresh_marker = snapshot.get("last_refresh")
+        token_changed = (
+            self._last_seen_access_token is not None
+            and bool(current_access_token)
+            and current_access_token != self._last_seen_access_token
+        )
+        refresh_marker_changed = (
+            self._last_auth_refresh_marker is not None
+            and bool(current_refresh_marker)
+            and current_refresh_marker != self._last_auth_refresh_marker
+        )
+        return token_changed or refresh_marker_changed
+
+    def _remember_auth_snapshot(self, snapshot: AuthFileSnapshot) -> None:
+        self._last_seen_access_token = snapshot.get("tokens", {}).get("access_token")
+        self._last_auth_refresh_marker = snapshot.get("last_refresh")
+
+    def _notify_user(self, title: str, message: str) -> None:
+        sanitized_title = title.replace('"', "'")
+        sanitized_message = message.replace('"', "'")
+
+        try:
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    (
+                        f'display notification "{sanitized_message}" '
+                        f'with title "{sanitized_title}"'
+                    ),
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+
+    def _notify_auth_refresh_detected(self, snapshot: AuthFileSnapshot) -> None:
+        refresh_marker = snapshot.get("last_refresh")
+        subtitle = (
+            f"last_refresh={refresh_marker}" if refresh_marker else "auth.json changed"
+        )
+        self._notify_user(
+            APP_TITLE,
+            f"Detected Codex auth refresh: {subtitle}",
+        )
 
     def manual_fetch(self) -> None:
         self.status_var.set("Manual fetch initiated...")
@@ -828,6 +954,10 @@ class CodexMonitorApp:
     def process_auth_file(self) -> None:
         if not self.auth_file_service.auth_file_exists():
             self._reset_auth_retry_state()
+            self._reset_missing_token_retry_state()
+            self._last_seen_auth_signature = None
+            self._last_auth_refresh_marker = None
+            self._last_seen_access_token = None
             email = self.state.current_account_email
             jwt = self.state.get_latest_jwt_for_fetch(email)
 
@@ -848,17 +978,36 @@ class CodexMonitorApp:
             return
 
         try:
-            jwt = self.auth_file_service.load_access_token()
+            snapshot = self.auth_file_service.load_snapshot()
+            jwt = snapshot.get("tokens", {}).get("access_token")
             if jwt:
                 self._reset_auth_retry_state()
+                self._reset_missing_token_retry_state()
+                refresh_detected = self._snapshot_refresh_changed(snapshot)
+                self._remember_auth_snapshot(snapshot)
                 self.state.remember_auth_jwt(jwt)
-                self._begin_fetch("Fetching quota from current auth.json...")
+                if refresh_detected:
+                    refresh_marker = snapshot.get("last_refresh")
+                    status_message = (
+                        f"Detected auth refresh at {refresh_marker}. Fetching new quota..."
+                        if refresh_marker
+                        else "Detected auth token rotation. Fetching new quota..."
+                    )
+                    self._notify_auth_refresh_detected(snapshot)
+                else:
+                    status_message = "Fetching quota from current auth.json..."
+                self._begin_fetch(status_message)
                 threading.Thread(
                     target=self._bg_fetch_single,
                     args=(None, jwt),
                     daemon=True,
                 ).start()
             else:
+                self._reset_auth_retry_state()
+                if self._schedule_missing_token_retry():
+                    return
+
+                self._reset_missing_token_retry_state()
                 self._reset_auth_retry_state()
                 email = self.state.current_account_email
                 latest_jwt = self.state.get_latest_jwt_for_fetch(email)
@@ -882,6 +1031,7 @@ class CodexMonitorApp:
             self._schedule_auth_parse_retry()
         except Exception as error:
             self._reset_auth_retry_state()
+            self._reset_missing_token_retry_state()
             self.status_var.set(f"Failed to parse auth.json: {error}")
 
     def _fetch_usage(self, jwt: str) -> dict:
@@ -950,7 +1100,7 @@ class CodexMonitorApp:
         self.root.after(0, lambda m=message: self._finalize_logout(m))
 
     def _finalize_logout(self, message: str) -> None:
-        if not self.auth_file_service.auth_file_exists():
+        if not self._auth_file_has_access_token():
             self.state.clear_session_credentials()
             self.refresh_ui()
         self._finish_fetch(message)
@@ -1015,6 +1165,9 @@ class CodexMonitorApp:
         if self._update_check_timer_id:
             self.root.after_cancel(self._update_check_timer_id)
             self._update_check_timer_id = None
+        if self._auth_poll_timer_id:
+            self.root.after_cancel(self._auth_poll_timer_id)
+            self._auth_poll_timer_id = None
 
         self.auth_watcher.stop()
         self.root.destroy()

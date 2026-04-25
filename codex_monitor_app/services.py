@@ -4,7 +4,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from .config import AUTH_FILE_PATH, AUTO_FETCH_INTERVALS
-from .models import UsageMap, UsageResponse
+from .models import AuthFileSnapshot, UsageMap, UsageResponse
 from .storage import UsageStorage
 
 
@@ -13,7 +13,7 @@ class MonitorStateService:
         self.storage = storage
         self.usage_map: UsageMap = storage.load()
         self.session_tokens: Dict[str, str] = {}
-        self.current_account_email: Optional[str] = None
+        self.current_account_email: Optional[str] = self._restore_current_account_email()
         self.latest_auth_jwt: Optional[str] = None
 
     def save_data(self) -> None:
@@ -31,6 +31,8 @@ class MonitorStateService:
         self.session_tokens.clear()
         self.current_account_email = None
         self.latest_auth_jwt = None
+        self.storage.set_meta_value("current_account_email", None)
+        self.save_data()
         return had_current_account
 
     def remember_auth_jwt(self, jwt: Optional[str]) -> None:
@@ -40,6 +42,7 @@ class MonitorStateService:
         self.current_account_email = email
         self.session_tokens = {email: jwt}
         self.latest_auth_jwt = jwt
+        self.storage.set_meta_value("current_account_email", email)
 
         changed = False
         for account_email, data in self.usage_map.items():
@@ -131,6 +134,24 @@ class MonitorStateService:
             key=lambda item: item[1].get("reset_ts", 0),
         )
 
+    def _restore_current_account_email(self) -> Optional[str]:
+        saved_current_email = self.storage.get_meta_value("current_account_email")
+        if saved_current_email in self.usage_map:
+            return saved_current_email
+
+        auto_fetch_accounts = [
+            email
+            for email, data in self.usage_map.items()
+            if data.get("auto_fetch", "None") != "None"
+        ]
+        if len(auto_fetch_accounts) == 1:
+            return auto_fetch_accounts[0]
+
+        if len(self.usage_map) == 1:
+            return next(iter(self.usage_map))
+
+        return None
+
 
 class AuthFileService:
     def __init__(self, auth_file_path: str = AUTH_FILE_PATH):
@@ -139,7 +160,12 @@ class AuthFileService:
     def auth_file_exists(self) -> bool:
         return os.path.exists(self.auth_file_path)
 
-    def load_access_token(self) -> Optional[str]:
+    def load_snapshot(self) -> AuthFileSnapshot:
         with open(self.auth_file_path, "r", encoding="utf-8") as file:
             auth_data = json.load(file)
-        return auth_data.get("tokens", {}).get("access_token")
+        if not isinstance(auth_data, dict):
+            raise ValueError("auth.json root must be an object")
+        return auth_data
+
+    def load_access_token(self) -> Optional[str]:
+        return self.load_snapshot().get("tokens", {}).get("access_token")

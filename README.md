@@ -81,3 +81,23 @@ codex_monitor_app/
   formatters.py               # UI display formatting helpers
   config.py                   # constants and settings
 ```
+
+## Auth File Notes
+
+The app watches `~/.codex/auth.json` and expects the Codex auth file to look like this:
+
+```json
+{
+  "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": null,
+  "tokens": {
+    "id_token": "eyJ....",
+    "access_token": "eyJ....",
+    "refresh_token": "rt_...",
+    "account_id": "uuid"
+  },
+  "last_refresh": "2026-04-24T15:17:00.949966Z"
+}
+```
+
+`access_token` is used for quota fetches. `last_refresh` and token rotation are also tracked so the app can surface when Codex silently refreshes auth in the background.
