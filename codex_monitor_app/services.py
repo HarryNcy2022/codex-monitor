@@ -3,7 +3,7 @@ import os
 import time
 from typing import Dict, List, Optional, Tuple
 
-from .config import AUTH_FILE_PATH, AUTO_FETCH_INTERVALS
+from .config import AUTH_FILE_PATH, AUTO_FETCH_INTERVALS, AUTO_FETCH_OPTIONS
 from .models import AuthFileSnapshot, UsageMap, UsageResponse
 from .storage import UsageStorage
 
@@ -14,6 +14,7 @@ class MonitorStateService:
         self.usage_map: UsageMap = storage.load()
         self.session_tokens: Dict[str, str] = {}
         self.current_account_email: Optional[str] = self._restore_current_account_email()
+        self.auto_fetch_interval: str = self._restore_auto_fetch_value()
         self.latest_auth_jwt: Optional[str] = None
 
     def save_data(self) -> None:
@@ -44,26 +45,30 @@ class MonitorStateService:
         self.latest_auth_jwt = jwt
         self.storage.set_meta_value("current_account_email", email)
 
-        changed = False
-        for account_email, data in self.usage_map.items():
-            if account_email != email and data.get("auto_fetch", "None") != "None":
-                data["auto_fetch"] = "None"
-                changed = True
-
-        if changed:
-            self.save_data()
-
     def get_display_auto_fetch(self, email: str) -> str:
         if email != self.current_account_email:
             return "-"
-        return self.usage_map[email].get("auto_fetch", "None")
+        return self.auto_fetch_interval
+
+    def get_auto_fetch_value(self) -> str:
+        return self.auto_fetch_interval
 
     def save_auto_fetch_value(self, email: str, new_value: str) -> bool:
         if email in self.usage_map and email == self.current_account_email:
-            self.usage_map[email]["auto_fetch"] = new_value
+            self.auto_fetch_interval = (
+                new_value if new_value in AUTO_FETCH_OPTIONS else "None"
+            )
+            self.storage.set_meta_value("auto_fetch", self.auto_fetch_interval)
             self.save_data()
             return True
         return False
+
+    def import_data(self, payload: object) -> None:
+        self.usage_map = self.storage.import_data(payload)
+        self.current_account_email = self._restore_current_account_email()
+        self.auto_fetch_interval = self._restore_auto_fetch_value()
+        self.session_tokens.clear()
+        self.latest_auth_jwt = None
 
     def apply_usage_response(
         self, response_data: UsageResponse, jwt: str
@@ -88,9 +93,6 @@ class MonitorStateService:
                 "last_fetched": time.time(),
             }
         )
-        if "auto_fetch" not in self.usage_map[email]:
-            self.usage_map[email]["auto_fetch"] = "None"
-
         self.set_current_account(email, jwt)
         self.save_data()
         return email
@@ -104,7 +106,7 @@ class MonitorStateService:
         if not data:
             return None
 
-        interval_label = data.get("auto_fetch", "None")
+        interval_label = self.auto_fetch_interval
         if interval_label == "None":
             return None
 
@@ -131,7 +133,10 @@ class MonitorStateService:
     def sorted_usage_items(self) -> List[Tuple[str, dict]]:
         return sorted(
             self.usage_map.items(),
-            key=lambda item: item[1].get("reset_ts", 0),
+            key=lambda item: (
+                0 if item[0] == self.current_account_email else 1,
+                item[1].get("reset_ts", 0),
+            ),
         )
 
     def _restore_current_account_email(self) -> Optional[str]:
@@ -139,18 +144,16 @@ class MonitorStateService:
         if saved_current_email in self.usage_map:
             return saved_current_email
 
-        auto_fetch_accounts = [
-            email
-            for email, data in self.usage_map.items()
-            if data.get("auto_fetch", "None") != "None"
-        ]
-        if len(auto_fetch_accounts) == 1:
-            return auto_fetch_accounts[0]
-
         if len(self.usage_map) == 1:
             return next(iter(self.usage_map))
 
         return None
+
+    def _restore_auto_fetch_value(self) -> str:
+        saved_auto_fetch = self.storage.get_meta_value("auto_fetch")
+        if isinstance(saved_auto_fetch, str) and saved_auto_fetch in AUTO_FETCH_OPTIONS:
+            return saved_auto_fetch
+        return "None"
 
 
 class AuthFileService:

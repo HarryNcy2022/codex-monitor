@@ -6,6 +6,7 @@ import time
 import tkinter as tk
 import urllib.error
 from datetime import datetime
+from tkinter import filedialog, messagebox
 from typing import Dict, Optional, Tuple
 
 import customtkinter as ctk
@@ -80,13 +81,17 @@ class CodexMonitorApp:
         self._last_seen_access_token: Optional[str] = None
         self.manual_button: Optional[ctk.CTkButton] = None
         self.copy_status_button: Optional[ctk.CTkButton] = None
+        self.export_button: Optional[ctk.CTkButton] = None
+        self.import_button: Optional[ctk.CTkButton] = None
         self.auto_fetch_label: Optional[ctk.CTkLabel] = None
         self.auto_fetch_menu: Optional[ctk.CTkOptionMenu] = None
         self.status_textbox: Optional[tk.Text] = None
         self.update_button: Optional[ctk.CTkButton] = None
         self.theme_button: Optional[ctk.CTkButton] = None
         self._available_release: Optional[ReleaseInfo] = None
+        self._prepared_update: Optional[Tuple[ReleaseInfo, str, str, str]] = None
         self._update_check_in_progress = False
+        self._update_prepare_in_progress = False
         self._update_in_progress = False
 
         self.setup_ui()
@@ -289,13 +294,41 @@ class CodexMonitorApp:
         )
         self.copy_status_button.grid(row=0, column=1, sticky="w", padx=(0, 10), pady=7)
 
+        self.export_button = ctk.CTkButton(
+            status_frame,
+            text="Export",
+            command=self.export_data,
+            corner_radius=11,
+            height=34,
+            width=58,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        self.export_button.grid(row=0, column=2, sticky="e", padx=(0, 6), pady=7)
+
+        self.import_button = ctk.CTkButton(
+            status_frame,
+            text="Import",
+            command=self.import_data,
+            corner_radius=11,
+            height=34,
+            width=58,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        self.import_button.grid(row=0, column=3, sticky="e", padx=(0, 10), pady=7)
+
         self.auto_fetch_label = ctk.CTkLabel(
             status_frame,
             text="Auto Fetch",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=tokens["muted"],
         )
-        self.auto_fetch_label.grid(row=0, column=2, sticky="e", padx=(0, 5), pady=7)
+        self.auto_fetch_label.grid(row=0, column=4, sticky="e", padx=(0, 5), pady=7)
 
         self.auto_fetch_menu = ctk.CTkOptionMenu(
             status_frame,
@@ -313,7 +346,7 @@ class CodexMonitorApp:
             text_color=tokens["control_fg"],
             anchor="w",
         )
-        self.auto_fetch_menu.grid(row=0, column=3, sticky="e", padx=(0, 6), pady=7)
+        self.auto_fetch_menu.grid(row=0, column=5, sticky="e", padx=(0, 6), pady=7)
 
         self.manual_button = ctk.CTkButton(
             status_frame,
@@ -327,7 +360,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.manual_button.grid(row=0, column=4, sticky="e", padx=(0, 6), pady=7)
+        self.manual_button.grid(row=0, column=6, sticky="e", padx=(0, 6), pady=7)
 
         self.update_button = ctk.CTkButton(
             status_frame,
@@ -341,7 +374,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.update_button.grid(row=0, column=5, sticky="e", padx=(0, 6), pady=7)
+        self.update_button.grid(row=0, column=7, sticky="e", padx=(0, 6), pady=7)
 
         self.theme_button = ctk.CTkButton(
             status_frame,
@@ -355,7 +388,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.theme_button.grid(row=0, column=6, sticky="e", padx=(0, 10), pady=7)
+        self.theme_button.grid(row=0, column=8, sticky="e", padx=(0, 10), pady=7)
         self._sync_status_textbox()
         self._update_manual_button_state()
 
@@ -381,6 +414,8 @@ class CodexMonitorApp:
             widget.destroy()
         self.manual_button = None
         self.copy_status_button = None
+        self.export_button = None
+        self.import_button = None
         self.auto_fetch_label = None
         self.auto_fetch_menu = None
         self.status_textbox = None
@@ -533,6 +568,55 @@ class CodexMonitorApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(message)
 
+    def copy_account_email(self, email: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(email)
+        self.status_var.set(f"Copied {email}.")
+
+    def export_data(self) -> None:
+        default_name = f"codex-monitor-data-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        path = filedialog.asksaveasfilename(
+            title="Export Codex Monitor data",
+            defaultextension=".json",
+            initialfile=default_name,
+            filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
+        )
+        if not path:
+            return
+
+        try:
+            payload = self.storage.export_data(self.state.usage_map)
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(payload, file, indent=2)
+            self.status_var.set(f"Exported accounts and config to {path}.")
+        except Exception as error:
+            self.status_var.set(f"Export failed: {error}")
+
+    def import_data(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Import Codex Monitor data",
+            filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
+        )
+        if not path:
+            return
+
+        should_import = messagebox.askyesno(
+            APP_TITLE,
+            "Import accounts and app config from this JSON file? Existing accounts are merged.",
+        )
+        if not should_import:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                payload = json.load(file)
+            self.state.import_data(payload)
+            self.refresh_ui(skip_auto_fetch=True)
+            self._update_manual_button_state()
+            self.status_var.set(f"Imported accounts and config from {path}.")
+        except Exception as error:
+            self.status_var.set(f"Import failed: {error}")
+
     def _schedule_next_update_check(self) -> None:
         if self._update_check_timer_id:
             self.root.after_cancel(self._update_check_timer_id)
@@ -546,13 +630,17 @@ class CodexMonitorApp:
         if not self.update_button or not self.theme_button:
             return
 
-        show_button = self._available_release is not None or self._update_in_progress
+        show_button = (
+            self._available_release is not None
+            or self._update_prepare_in_progress
+            or self._update_in_progress
+        )
         if show_button:
             self.update_button.grid()
-            self.theme_button.grid_configure(column=6)
+            self.theme_button.grid_configure(column=8)
         else:
             self.update_button.grid_remove()
-            self.theme_button.grid_configure(column=5)
+            self.theme_button.grid_configure(column=7)
 
     def _update_manual_button_state(self) -> None:
         if not self.manual_button:
@@ -566,6 +654,8 @@ class CodexMonitorApp:
         if self.update_button:
             if self._update_in_progress:
                 self.update_button.configure(state="disabled", text="...")
+            elif self._update_prepare_in_progress:
+                self.update_button.configure(state="disabled", text="Prep...")
             elif self._available_release:
                 self.update_button.configure(state="normal", text="Update")
             else:
@@ -603,7 +693,7 @@ class CodexMonitorApp:
     def save_auto_fetch_value(self, email: str, new_value: str) -> None:
         if self.state.save_auto_fetch_value(email, new_value):
             self.refresh_ui()
-            self.status_var.set(f"Auto-fetch for {email} set to {new_value}.")
+            self.status_var.set(f"Auto-fetch set to {new_value}.")
             self._notify_auto_fetch_setting_changed(email, new_value)
 
     def save_current_auto_fetch_value(self, new_value: str) -> None:
@@ -611,7 +701,7 @@ class CodexMonitorApp:
         if not email:
             if self.auto_fetch_menu:
                 self.auto_fetch_menu.set("None")
-            self.status_var.set("No active account to attach auto-fetch to.")
+            self.status_var.set("No active account for auto-fetch.")
             return
 
         self.save_auto_fetch_value(email, new_value)
@@ -647,14 +737,38 @@ class CodexMonitorApp:
         )
         self._configure_account_columns(row)
 
-        self._build_value_label(
-            row,
-            email_display,
-            row_text,
-            0,
-            anchor="w",
-            bold=is_current,
+        email_cell = ctk.CTkFrame(row, fg_color="transparent")
+        email_cell.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=10,
+            pady=self.TABLE_ROW_PAD_Y,
         )
+        email_cell.grid_columnconfigure(0, weight=1)
+        email_label = ctk.CTkLabel(
+            email_cell,
+            text=email_display,
+            anchor="w",
+            font=ctk.CTkFont(size=11, weight="bold" if is_current else "normal"),
+            text_color=row_text,
+        )
+        email_label.grid(row=0, column=0, sticky="ew")
+
+        copy_button = ctk.CTkButton(
+            email_cell,
+            text="⧉",
+            command=lambda account_email=email: self.copy_account_email(account_email),
+            corner_radius=8,
+            height=24,
+            width=26,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        copy_button.grid(row=0, column=1, sticky="e", padx=(6, 0))
+
         self._build_value_label(
             row,
             quota_left,
@@ -840,9 +954,9 @@ class CodexMonitorApp:
 
     def _notify_auto_fetch_setting_changed(self, email: str, interval_label: str) -> None:
         if interval_label == "None":
-            message = f"Auto-fetch turned off for {email}."
+            message = "Auto-fetch turned off."
         else:
-            message = f"Auto-fetch enabled for {email}: every {interval_label}."
+            message = f"Auto-fetch enabled for the active account: every {interval_label}."
         self._notify_user(APP_TITLE, message)
 
     def _notify_auto_fetch_triggered(self, email: str, interval_label: str) -> None:
@@ -905,16 +1019,88 @@ class CodexMonitorApp:
                 or current_message.startswith("Watching: ")
             ):
                 self.status_var.set(
-                    f"Update available: v{resolved_release.version}. Tap the button to install."
+                    f"Update available: v{resolved_release.version}. Preparing download..."
                 )
         elif error_message and self.status_var.get().startswith("Watching: "):
             self.status_var.set(error_message)
 
         self._update_manual_button_state()
+        if resolved_release:
+            self._start_update_prepare(resolved_release)
+        elif not error_message:
+            self._prepared_update = None
         self._schedule_next_update_check()
 
+    def _prepared_update_matches(self, release: ReleaseInfo) -> bool:
+        return (
+            self._prepared_update is not None
+            and self._prepared_update[0].tag_name == release.tag_name
+        )
+
+    def _start_update_prepare(self, release: ReleaseInfo) -> None:
+        if (
+            self._update_prepare_in_progress
+            or self._update_in_progress
+            or self._prepared_update_matches(release)
+        ):
+            return
+
+        self._update_prepare_in_progress = True
+        self._prepared_update = None
+        self._update_manual_button_state()
+        threading.Thread(
+            target=self._bg_prepare_update,
+            args=(release,),
+            daemon=True,
+        ).start()
+
+    def _bg_prepare_update(self, release: ReleaseInfo) -> None:
+        prepared: Optional[Tuple[ReleaseInfo, str, str, str]] = None
+        error_message: Optional[str] = None
+
+        try:
+            source_app, target_app, temp_root = prepare_update(release)
+            prepared = (release, source_app, target_app, temp_root)
+        except urllib.error.HTTPError as error:
+            error_message = f"Update check failed with HTTP {error.code}."
+        except (urllib.error.URLError, TimeoutError) as error:
+            error_message = f"Network Error while preparing update: {getattr(error, 'reason', str(error))}"
+        except subprocess.CalledProcessError:
+            error_message = "Update download succeeded, but extracting the app failed."
+        except UpdateError as error:
+            error_message = f"Update error: {error}"
+        except Exception as error:
+            error_message = f"Unexpected update prepare error: {error}"
+
+        self.root.after(
+            0,
+            lambda p=prepared, e=error_message: self._finish_update_prepare(p, e),
+        )
+
+    def _finish_update_prepare(
+        self,
+        prepared: Optional[Tuple[ReleaseInfo, str, str, str]],
+        error_message: Optional[str],
+    ) -> None:
+        self._update_prepare_in_progress = False
+        if prepared and self._available_release:
+            release = prepared[0]
+            if release.tag_name == self._available_release.tag_name:
+                self._prepared_update = prepared
+                self.status_var.set(
+                    f"Update v{release.version} is downloaded and ready to install."
+                )
+        elif error_message and self._available_release:
+            self.status_var.set(error_message)
+
+        self._update_manual_button_state()
+
     def update_application(self) -> None:
-        if self._update_in_progress or not self._available_release:
+        if (
+            self._update_in_progress
+            or self._update_prepare_in_progress
+            or not self._available_release
+        ):
             return
 
         self._update_in_progress = True
@@ -932,7 +1118,10 @@ class CodexMonitorApp:
                 message = f"You're already on the latest version (v{APP_VERSION})."
             else:
                 release = self._available_release
-                source_app, target_app, temp_root = prepare_update(release)
+                if self._prepared_update_matches(release) and self._prepared_update:
+                    _release, source_app, target_app, temp_root = self._prepared_update
+                else:
+                    source_app, target_app, temp_root = prepare_update(release)
                 install_update_and_restart(source_app, target_app, temp_root)
                 message = (
                     f"Installing v{release.version} and reopening from {target_app}..."
@@ -961,6 +1150,7 @@ class CodexMonitorApp:
         self._update_in_progress = False
         if close_after:
             self._available_release = None
+            self._prepared_update = None
         self.status_var.set(status_message)
         self._update_manual_button_state()
         if close_after:
@@ -1124,7 +1314,7 @@ class CodexMonitorApp:
         jwt = self.state.get_due_auto_fetch_jwt(time.time())
         if jwt:
             email = self.state.current_account_email or "current account"
-            interval_label = self.state.usage_map.get(email, {}).get("auto_fetch", "None")
+            interval_label = self.state.get_auto_fetch_value()
             self._notify_auto_fetch_triggered(email, interval_label)
             self._begin_fetch(f"Auto-fetching quota for {email}...")
             threading.Thread(
