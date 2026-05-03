@@ -6,6 +6,8 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,9 +19,11 @@ from .config import (
     APP_VERSION,
     DEFAULT_APP_INSTALL_PATH,
     DEFAULT_INSTALL_DIR,
+    GITHUB_REPOSITORY,
     HTTP_USER_AGENT,
     RELEASE_ASSET_NAME,
     RELEASES_API_URL,
+    RELEASES_PAGE_URL,
 )
 
 
@@ -55,7 +59,37 @@ def is_newer_version(candidate: str, current: str) -> bool:
     return padded_left > padded_right
 
 
-def fetch_latest_release() -> ReleaseInfo:
+def _latest_release_from_page() -> ReleaseInfo:
+    request = urllib.request.Request(
+        RELEASES_PAGE_URL,
+        headers={"User-Agent": HTTP_USER_AGENT},
+    )
+
+    with urllib.request.urlopen(request, context=_ssl_context(), timeout=15) as response:
+        html_url = response.geturl()
+
+    match = re.search(r"/releases/tag/([^/?#]+)", html_url)
+    if not match:
+        raise UpdateError("Could not resolve the latest release tag.")
+
+    tag_name = urllib.parse.unquote(match.group(1))
+    encoded_tag = urllib.parse.quote(tag_name, safe="")
+    encoded_asset = urllib.parse.quote(RELEASE_ASSET_NAME, safe="")
+    asset_url = (
+        f"https://github.com/{GITHUB_REPOSITORY}/releases/download/"
+        f"{encoded_tag}/{encoded_asset}"
+    )
+
+    return ReleaseInfo(
+        tag_name=tag_name,
+        version=tag_name.lstrip("vV") or APP_VERSION,
+        asset_name=RELEASE_ASSET_NAME,
+        asset_url=asset_url,
+        html_url=html_url,
+    )
+
+
+def _latest_release_from_api() -> ReleaseInfo:
     request = urllib.request.Request(
         RELEASES_API_URL,
         headers={
@@ -82,6 +116,15 @@ def fetch_latest_release() -> ReleaseInfo:
         asset_url=asset["browser_download_url"],
         html_url=payload.get("html_url", ""),
     )
+
+
+def fetch_latest_release() -> ReleaseInfo:
+    try:
+        return _latest_release_from_api()
+    except urllib.error.HTTPError as error:
+        if error.code in (403, 429):
+            return _latest_release_from_page()
+        raise
 
 
 def download_release_asset(release: ReleaseInfo, target_dir: str) -> str:
