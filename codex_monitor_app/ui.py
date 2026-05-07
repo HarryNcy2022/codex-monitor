@@ -79,6 +79,7 @@ class CodexMonitorApp:
         self._last_seen_auth_signature = self._get_auth_file_signature()
         self._last_auth_refresh_marker: Optional[str] = None
         self._last_seen_access_token: Optional[str] = None
+        self._remove_confirm_result = False
         self.manual_button: Optional[ctk.CTkButton] = None
         self.copy_status_button: Optional[ctk.CTkButton] = None
         self.export_button: Optional[ctk.CTkButton] = None
@@ -187,12 +188,13 @@ class CodexMonitorApp:
         header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 3))
         self._configure_account_columns(header_frame)
         header_frame.grid_columnconfigure(
-            3,
+            4,
             minsize=self._table_scrollbar_gutter_width(),
         )
         self._build_header_cell(header_frame, "Account Email", 0, "w")
         self._build_header_cell(header_frame, "Quota", 1, "w")
         self._build_header_cell(header_frame, "Reset Time", 2, "w")
+        self._build_header_cell(header_frame, "Action", 3, "e")
 
         body_frame = ctk.CTkFrame(
             accounts_shell,
@@ -393,9 +395,10 @@ class CodexMonitorApp:
         self._update_manual_button_state()
 
     def _configure_account_columns(self, frame: ctk.CTkFrame) -> None:
-        frame.grid_columnconfigure(0, weight=6, uniform="account-cols")
+        frame.grid_columnconfigure(0, weight=5, uniform="account-cols")
         frame.grid_columnconfigure(1, weight=2, uniform="account-cols")
         frame.grid_columnconfigure(2, weight=4, uniform="account-cols")
+        frame.grid_columnconfigure(3, weight=1, uniform="account-cols", minsize=58)
 
     def _table_scrollbar_gutter_width(self) -> int:
         return self.TABLE_SCROLLBAR_WIDTH + self.TABLE_SCROLLBAR_PAD_X
@@ -572,6 +575,123 @@ class CodexMonitorApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(email)
         self.status_var.set(f"Copied {email}.")
+
+    def _remove_button_icon(self) -> str:
+        return "⌫"
+
+    def _confirm_remove_account(self, email: str) -> bool:
+        tokens = self._theme_tokens()
+        self._remove_confirm_result = False
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Remove account")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.configure(fg_color=tokens["card"])
+
+        container = ctk.CTkFrame(
+            dialog,
+            corner_radius=14,
+            fg_color=tokens["card"],
+            border_width=1,
+            border_color=tokens["border"],
+        )
+        container.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        container.grid_columnconfigure(0, weight=1)
+
+        title_label = ctk.CTkLabel(
+            container,
+            text="Remove account?",
+            anchor="w",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=tokens["text"],
+        )
+        title_label.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 4))
+
+        message_label = ctk.CTkLabel(
+            container,
+            text=f"This will remove stored account info for:\n{email}",
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(size=12),
+            text_color=tokens["muted"],
+        )
+        message_label.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 14))
+
+        buttons = ctk.CTkFrame(container, fg_color="transparent")
+        buttons.grid(row=2, column=0, sticky="e", padx=14, pady=(0, 14))
+
+        closed = False
+
+        def close_with(result: bool) -> None:
+            nonlocal closed
+            if closed:
+                return
+            closed = True
+            self._remove_confirm_result = result
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+
+        cancel_button = ctk.CTkButton(
+            buttons,
+            text="Cancel",
+            command=lambda: close_with(False),
+            corner_radius=8,
+            height=30,
+            width=82,
+            fg_color=tokens["row_border"],
+            hover_color=tokens["scrollbar_thumb_hover"],
+            text_color=tokens["text"],
+        )
+        cancel_button.grid(row=0, column=0, padx=(0, 8))
+
+        confirm_button = ctk.CTkButton(
+            buttons,
+            text="Confirm",
+            command=lambda: close_with(True),
+            corner_radius=8,
+            height=30,
+            width=86,
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        confirm_button.grid(row=0, column=1)
+
+        dialog.bind("<Return>", lambda _event: close_with(True))
+        dialog.bind("<Escape>", lambda _event: close_with(False))
+        dialog.protocol("WM_DELETE_WINDOW", lambda: close_with(False))
+
+        dialog.update_idletasks()
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        dialog_width = dialog.winfo_reqwidth()
+        dialog_height = dialog.winfo_reqheight()
+        x = root_x + max((root_width - dialog_width) // 2, 0)
+        y = root_y + max((root_height - dialog_height) // 2, 0)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.grab_set()
+        dialog.lift()
+        confirm_button.focus_set()
+        self.root.wait_window(dialog)
+        return self._remove_confirm_result
+
+    def remove_account(self, email: str) -> None:
+        if not self._confirm_remove_account(email):
+            return
+
+        if self.state.remove_account(email):
+            self.refresh_ui(skip_auto_fetch=True)
+            self._update_manual_button_state()
+            self.status_var.set(f"Removed {email}.")
 
     def export_data(self) -> None:
         default_name = f"codex-monitor-data-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
@@ -783,6 +903,26 @@ class CodexMonitorApp:
             row_text,
             2,
             anchor="w",
+        )
+
+        remove_button = ctk.CTkButton(
+            row,
+            text=self._remove_button_icon(),
+            command=lambda account_email=email: self.remove_account(account_email),
+            corner_radius=8,
+            height=24,
+            width=26,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        remove_button.grid(
+            row=0,
+            column=3,
+            sticky="e",
+            padx=10,
+            pady=self.TABLE_ROW_PAD_Y,
         )
 
     def initial_fetch_on_startup(self) -> None:

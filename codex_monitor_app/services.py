@@ -63,6 +63,20 @@ class MonitorStateService:
             return True
         return False
 
+    def remove_account(self, email: str) -> bool:
+        if email not in self.usage_map:
+            return False
+
+        self.usage_map.pop(email, None)
+        self.session_tokens.pop(email, None)
+        if email == self.current_account_email:
+            self.current_account_email = None
+            self.latest_auth_jwt = None
+            self.storage.set_meta_value("current_account_email", None)
+
+        self.save_data()
+        return True
+
     def import_data(self, payload: object) -> None:
         self.usage_map = self.storage.import_data(payload)
         self.current_account_email = self._restore_current_account_email()
