@@ -23,6 +23,11 @@ from .config import (
     WINDOW_MIN_SIZE,
 )
 from .formatters import format_quota_left, format_reset_display
+from .icon_font import (
+    MATERIAL_SYMBOLS_FAMILY,
+    material_symbol,
+    register_material_symbols_font,
+)
 from .models import AuthFileSnapshot
 from .services import AuthFileService, MonitorStateService
 from .storage import UsageStorage
@@ -37,12 +42,81 @@ from .updater import (
 from .watcher import AuthFileWatcher
 
 
+class ToolTip:
+    def __init__(
+        self,
+        widget: tk.Misc,
+        text: str,
+        bg_color: str,
+        fg_color: str,
+        border_color: str,
+    ):
+        self.widget = widget
+        self.text = text
+        self.bg_color = bg_color
+        self.fg_color = fg_color
+        self.border_color = border_color
+        self._after_id: Optional[str] = None
+        self._window: Optional[tk.Toplevel] = None
+
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event: tk.Event) -> None:
+        self._cancel()
+        self._after_id = self.widget.after(450, self._show)
+
+    def _cancel(self) -> None:
+        if self._after_id:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+
+    def _show(self) -> None:
+        self._after_id = None
+        if self._window:
+            return
+
+        x = self.widget.winfo_rootx() + self.widget.winfo_width() // 2
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        window = tk.Toplevel(self.widget)
+        window.wm_overrideredirect(True)
+        window.configure(background=self.border_color)
+        label = tk.Label(
+            window,
+            text=self.text,
+            background=self.bg_color,
+            foreground=self.fg_color,
+            borderwidth=0,
+            padx=8,
+            pady=4,
+            font=("TkDefaultFont", 10),
+        )
+        label.pack(padx=1, pady=1)
+        window.update_idletasks()
+        x -= window.winfo_width() // 2
+        window.wm_geometry(f"+{x}+{y}")
+        self._window = window
+
+    def _hide(self, _event: Optional[tk.Event] = None) -> None:
+        self._cancel()
+        if self._window:
+            self._window.destroy()
+            self._window = None
+
+
 class CodexMonitorApp:
     TABLE_HEADER_PAD_Y = 6
     TABLE_ROW_PAD_Y = 5
     TABLE_ROW_GAP_Y = 4
     TABLE_SCROLLBAR_WIDTH = 8
     TABLE_SCROLLBAR_PAD_X = 4
+    TOOLBAR_BUTTON_SIZE = 32
+    TOOLBAR_BUTTON_RADIUS = 8
+    TOOLBAR_ICON_SIZE = 18
+    ROW_BUTTON_SIZE = 26
+    ROW_BUTTON_RADIUS = 6
+    ROW_ICON_SIZE = 16
     AUTH_SIGNATURE_POLL_MS = 5000
     AUTH_EVENT_SETTLE_MS = 250
     AUTH_PARSE_RETRY_MS = 300
@@ -94,6 +168,9 @@ class CodexMonitorApp:
         self._update_check_in_progress = False
         self._update_prepare_in_progress = False
         self._update_in_progress = False
+        self._tooltips = []
+        self._row_tooltips = []
+        self._material_symbols_available = register_material_symbols_font()
 
         self.setup_ui()
         self.refresh_ui()
@@ -283,47 +360,62 @@ class CodexMonitorApp:
         )
         self.status_textbox.grid(row=0, column=0, sticky="ew", padx=(12, 0), pady=9)
 
+        copy_text = self._material_icon_text("copy")
         self.copy_status_button = ctk.CTkButton(
             status_frame,
-            text="⧉",
+            text=copy_text or "⧉",
             command=self.copy_status_message,
-            corner_radius=11,
-            height=34,
-            width=34,
-            font=ctk.CTkFont(size=15, weight="bold"),
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(18),
             fg_color=tokens["control_bg"],
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
         self.copy_status_button.grid(row=0, column=1, sticky="w", padx=(0, 10), pady=7)
+        self._force_square_button(self.copy_status_button, self.TOOLBAR_BUTTON_SIZE)
+        self._attach_tooltip(self.copy_status_button, "Copy status")
 
+        export_text = self._material_icon_text("download")
         self.export_button = ctk.CTkButton(
             status_frame,
-            text="Export",
+            text=export_text or "↓",
             command=self.export_data,
-            corner_radius=11,
-            height=34,
-            width=58,
-            font=ctk.CTkFont(size=11, weight="bold"),
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(18),
             fg_color=tokens["control_bg"],
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
         self.export_button.grid(row=0, column=2, sticky="e", padx=(0, 6), pady=7)
+        self._force_square_button(self.export_button, self.TOOLBAR_BUTTON_SIZE)
+        self._attach_tooltip(self.export_button, "Export data")
 
+        import_text = self._material_icon_text("upload")
         self.import_button = ctk.CTkButton(
             status_frame,
-            text="Import",
+            text=import_text or "↑",
             command=self.import_data,
-            corner_radius=11,
-            height=34,
-            width=58,
-            font=ctk.CTkFont(size=11, weight="bold"),
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(18),
             fg_color=tokens["control_bg"],
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
         self.import_button.grid(row=0, column=3, sticky="e", padx=(0, 10), pady=7)
+        self._force_square_button(self.import_button, self.TOOLBAR_BUTTON_SIZE)
+        self._attach_tooltip(self.import_button, "Import data")
 
         self.auto_fetch_label = ctk.CTkLabel(
             status_frame,
@@ -351,47 +443,62 @@ class CodexMonitorApp:
         )
         self.auto_fetch_menu.grid(row=0, column=5, sticky="e", padx=(0, 6), pady=7)
 
+        refresh_text = self._material_icon_text("refresh")
         self.manual_button = ctk.CTkButton(
             status_frame,
-            text=self._fetch_button_icon(),
+            text=refresh_text or "⟳",
             command=self.manual_fetch,
-            corner_radius=11,
-            height=34,
-            width=34,
-            font=ctk.CTkFont(size=16, weight="bold"),
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(18),
             fg_color=tokens["control_bg"],
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
         self.manual_button.grid(row=0, column=6, sticky="e", padx=(0, 6), pady=7)
+        self._force_square_button(self.manual_button, self.TOOLBAR_BUTTON_SIZE)
+        self._attach_tooltip(self.manual_button, "Fetch quota")
 
+        update_text = self._material_icon_text("download")
         self.update_button = ctk.CTkButton(
             status_frame,
-            text="Update",
+            text=update_text or "↓",
             command=self.update_application,
-            corner_radius=11,
-            height=34,
-            width=82,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(18),
             fg_color=tokens["control_bg"],
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
         self.update_button.grid(row=0, column=7, sticky="e", padx=(0, 6), pady=7)
+        self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
+        self._attach_tooltip(self.update_button, "Install update")
 
+        theme_text = self._appearance_toggle_icon()
         self.theme_button = ctk.CTkButton(
             status_frame,
-            text=self._appearance_toggle_icon(),
+            text=theme_text,
             command=self.toggle_appearance_mode,
-            corner_radius=11,
-            height=34,
-            width=34,
-            font=ctk.CTkFont(size=15, weight="bold"),
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(18),
             fg_color=tokens["control_bg"],
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
         self.theme_button.grid(row=0, column=8, sticky="e", padx=(0, 10), pady=7)
+        self._force_square_button(self.theme_button, self.TOOLBAR_BUTTON_SIZE)
+        self._attach_tooltip(self.theme_button, "Toggle theme")
         self._sync_status_textbox()
         self._update_manual_button_state()
 
@@ -405,13 +512,55 @@ class CodexMonitorApp:
     def _table_scrollbar_gutter_width(self) -> int:
         return self.TABLE_SCROLLBAR_WIDTH + self.TABLE_SCROLLBAR_PAD_X
 
-    def _fetch_button_icon(self) -> str:
-        return "⟳"
+    def _material_icon_text(self, name: str) -> str:
+        codepoints = {
+            "copy": "e14d",
+            "download": "f090",
+            "refresh": "e5d5",
+            "delete": "e92e",
+            "light_mode": "e518",
+            "dark_mode": "e51c",
+            "upload": "f09b",
+        }
+        if not self._material_symbols_available:
+            return ""
+        symbol = material_symbol(codepoints.get(name, ""))
+        return symbol or ""
+
+    def _material_icon_font(self, size: int) -> ctk.CTkFont:
+        if self._material_symbols_available:
+            return ctk.CTkFont(family=MATERIAL_SYMBOLS_FAMILY, size=size)
+        return ctk.CTkFont(size=size, weight="bold")
+
+    def _attach_tooltip(self, widget: tk.Misc, text: str, row_tooltip: bool = False) -> None:
+        tokens = self._theme_tokens()
+        tooltip = ToolTip(
+            widget,
+            text,
+            bg_color=tokens["card"],
+            fg_color=tokens["text"],
+            border_color=tokens["border"],
+        )
+        if row_tooltip:
+            self._row_tooltips.append(tooltip)
+        else:
+            self._tooltips.append(tooltip)
+
+    def _center_icon_button(self, button: ctk.CTkButton) -> None:
+        image_label = getattr(button, "_image_label", None)
+        if image_label is not None:
+            image_label.grid_configure(row=2, column=2, sticky="nsew")
+
+    def _force_square_button(self, button: ctk.CTkButton, size: int) -> None:
+        button.configure(width=size, height=size)
+        button.grid_propagate(False)
+        button.pack_propagate(False)
+        self._center_icon_button(button)
 
     def _appearance_toggle_icon(self) -> str:
         if ctk.get_appearance_mode().lower() == "dark":
-            return "☀"
-        return "☾"
+            return self._material_icon_text("light_mode") or "☀"
+        return self._material_icon_text("dark_mode") or "☾"
 
     def rebuild_ui(self) -> None:
         status_message = self.status_var.get() if hasattr(self, "status_var") else ""
@@ -427,6 +576,8 @@ class CodexMonitorApp:
         self.update_button = None
         self.theme_button = None
         self._accounts_window_id = None
+        self._tooltips = []
+        self._row_tooltips = []
         self.setup_ui()
         if status_message:
             self.status_var.set(status_message)
@@ -508,6 +659,9 @@ class CodexMonitorApp:
         return None
 
     def _clear_account_rows(self) -> None:
+        for tooltip in self._row_tooltips:
+            tooltip._hide()
+        self._row_tooltips = []
         for widget in self.accounts_rows_frame.winfo_children():
             widget.destroy()
 
@@ -597,9 +751,6 @@ class CodexMonitorApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(email)
         self.status_var.set(f"Copied {email}.")
-
-    def _remove_button_icon(self) -> str:
-        return "×"
 
     def _confirm_remove_account(self, email: str) -> bool:
         tokens = self._theme_tokens()
@@ -791,17 +942,44 @@ class CodexMonitorApp:
         if self._pending_fetches > 0:
             self.manual_button.configure(state="disabled", text="…")
         else:
-            self.manual_button.configure(state="normal", text=self._fetch_button_icon())
+            refresh_text = self._material_icon_text("refresh")
+            self.manual_button.configure(
+                state="normal",
+                text=refresh_text or "⟳",
+                font=self._material_icon_font(18),
+            )
+            self._force_square_button(self.manual_button, self.TOOLBAR_BUTTON_SIZE)
 
         if self.update_button:
+            update_text = self._material_icon_text("download")
             if self._update_in_progress:
-                self.update_button.configure(state="disabled", text="...")
+                self.update_button.configure(
+                    state="disabled",
+                    text=update_text or "...",
+                    font=self._material_icon_font(18),
+                )
+                self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
             elif self._update_prepare_in_progress:
-                self.update_button.configure(state="disabled", text="Prep...")
+                self.update_button.configure(
+                    state="disabled",
+                    text=update_text or "…",
+                    font=self._material_icon_font(18),
+                )
+                self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
             elif self._available_release:
-                self.update_button.configure(state="normal", text="Update")
+                self.update_button.configure(
+                    state="normal",
+                    text=update_text or "↓",
+                    font=self._material_icon_font(18),
+                )
+                self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
             else:
-                self.update_button.configure(state="normal", text="Update")
+                self.update_button.configure(
+                    state="normal",
+                    text=update_text or "↓",
+                    font=self._material_icon_font(18),
+                )
+                self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
 
         current_email = self.state.current_account_email
         if self.auto_fetch_menu:
@@ -820,7 +998,11 @@ class CodexMonitorApp:
         self._set_update_button_visibility()
 
         if self.theme_button:
-            self.theme_button.configure(text=self._appearance_toggle_icon())
+            self.theme_button.configure(
+                text=self._appearance_toggle_icon(),
+                font=self._material_icon_font(18),
+            )
+            self._force_square_button(self.theme_button, self.TOOLBAR_BUTTON_SIZE)
 
     def _begin_fetch(self, status_message: str) -> None:
         self._pending_fetches += 1
@@ -898,19 +1080,24 @@ class CodexMonitorApp:
         )
         email_label.grid(row=0, column=0, sticky="ew")
 
+        copy_text = self._material_icon_text("copy")
         copy_button = ctk.CTkButton(
             email_cell,
-            text="⧉",
+            text=copy_text or "⧉",
             command=lambda account_email=email: self.copy_account_email(account_email),
-            corner_radius=8,
-            height=24,
-            width=26,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=self.ROW_BUTTON_RADIUS,
+            height=self.ROW_BUTTON_SIZE,
+            width=self.ROW_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(16),
             fg_color=tokens["control_bg"],
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
         copy_button.grid(row=0, column=1, sticky="e", padx=(6, 0))
+        self._force_square_button(copy_button, self.ROW_BUTTON_SIZE)
+        self._attach_tooltip(copy_button, "Copy email", row_tooltip=True)
 
         self._build_value_label(
             row,
@@ -935,14 +1122,17 @@ class CodexMonitorApp:
             anchor="w",
         )
 
+        remove_text = self._material_icon_text("delete")
         remove_button = ctk.CTkButton(
             row,
-            text=self._remove_button_icon(),
+            text=remove_text or "×",
             command=lambda account_email=email: self.remove_account(account_email),
-            corner_radius=8,
-            height=24,
-            width=26,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=self.ROW_BUTTON_RADIUS,
+            height=self.ROW_BUTTON_SIZE,
+            width=self.ROW_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(16),
             fg_color=tokens["control_bg"],
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
@@ -954,6 +1144,8 @@ class CodexMonitorApp:
             padx=10,
             pady=self.TABLE_ROW_PAD_Y,
         )
+        self._force_square_button(remove_button, self.ROW_BUTTON_SIZE)
+        self._attach_tooltip(remove_button, "Remove account", row_tooltip=True)
 
     def initial_fetch_on_startup(self) -> None:
         self.status_var.set("Checking current auth.json on startup...")

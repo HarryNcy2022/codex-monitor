@@ -7,7 +7,12 @@ a = Analysis(
     ['codex_monitor.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        (
+            'codex_monitor_app/assets/fonts',
+            'codex_monitor_app/assets/fonts',
+        ),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
