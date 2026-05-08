@@ -541,6 +541,109 @@ class AuthFlowUiTests(unittest.TestCase):
             "Update v9.9.9 is downloaded and ready to install.",
         )
 
+    def test_manual_update_check_reports_latest_when_no_update(self):
+        app = self._build_app(FakeAuthFileService())
+        app.manual_button = None
+        app.update_button = None
+        app.theme_button = None
+        app._available_release = None
+        app._prepared_update = None
+        app._update_check_in_progress = False
+        app._update_prepare_in_progress = False
+        app._update_in_progress = False
+
+        original_thread = __import__("threading").Thread
+
+        class ImmediateThread:
+            def __init__(self, target=None, args=(), daemon=None):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                if self.target:
+                    self.target(*self.args)
+
+        import codex_monitor_app.ui as ui_module
+
+        original_fetch_latest_release = ui_module.fetch_latest_release
+        ui_module.threading.Thread = ImmediateThread
+        ui_module.fetch_latest_release = lambda: ReleaseInfo(
+            tag_name="v0.0.1",
+            version="0.0.1",
+            asset_name="CodexMonitor-macOS.zip",
+            asset_url="https://example.com/CodexMonitor-macOS.zip",
+            html_url="https://example.com/releases/v0.0.1",
+        )
+        try:
+            app.check_for_updates_manually()
+            _job_id, _delay, callback = app.root.after_calls[-1]
+            callback()
+        finally:
+            ui_module.threading.Thread = original_thread
+            ui_module.fetch_latest_release = original_fetch_latest_release
+
+        self.assertEqual(
+            app.status_var.get(),
+            f"You're already on the latest version (v{ui_module.APP_VERSION}).",
+        )
+        self.assertIsNone(app._available_release)
+        self.assertIsNone(app._prepared_update)
+
+    def test_manual_update_check_prepares_download_when_update_exists(self):
+        app = self._build_app(FakeAuthFileService())
+        app.manual_button = None
+        app.update_button = None
+        app.theme_button = None
+        app._available_release = None
+        app._prepared_update = None
+        app._update_check_in_progress = False
+        app._update_prepare_in_progress = False
+        app._update_in_progress = False
+        release = self._release()
+
+        original_thread = __import__("threading").Thread
+
+        class ImmediateThread:
+            def __init__(self, target=None, args=(), daemon=None):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                if self.target:
+                    self.target(*self.args)
+
+        import codex_monitor_app.ui as ui_module
+
+        original_fetch_latest_release = ui_module.fetch_latest_release
+        original_prepare_update = ui_module.prepare_update
+        ui_module.threading.Thread = ImmediateThread
+        ui_module.fetch_latest_release = lambda: release
+        ui_module.prepare_update = lambda _release: (
+            "/tmp/source.app",
+            "/tmp/target.app",
+            "/tmp/update-root",
+        )
+        try:
+            app.check_for_updates_manually()
+            _job_id, _delay, callback = app.root.after_calls[-1]
+            callback()
+            _job_id, _delay, callback = app.root.after_calls[-2]
+            callback()
+        finally:
+            ui_module.threading.Thread = original_thread
+            ui_module.fetch_latest_release = original_fetch_latest_release
+            ui_module.prepare_update = original_prepare_update
+
+        self.assertEqual(app._prepared_update[0], release)
+        self.assertEqual(
+            app.status_var.get(),
+            "Update v9.9.9 is downloaded and ready to install.",
+        )
+        self.assertEqual(
+            app.notifications,
+            [(ui_module.APP_TITLE, "Update v9.9.9 is available.")],
+        )
+
     def test_update_button_installs_prepared_update_without_redownloading(self):
         app = self._build_app(FakeAuthFileService())
         app.manual_button = None

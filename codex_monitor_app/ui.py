@@ -161,11 +161,13 @@ class CodexMonitorApp:
         self.auto_fetch_label: Optional[ctk.CTkLabel] = None
         self.auto_fetch_menu: Optional[ctk.CTkOptionMenu] = None
         self.status_textbox: Optional[tk.Text] = None
+        self.check_update_button: Optional[ctk.CTkButton] = None
         self.update_button: Optional[ctk.CTkButton] = None
         self.theme_button: Optional[ctk.CTkButton] = None
         self._available_release: Optional[ReleaseInfo] = None
         self._prepared_update: Optional[Tuple[ReleaseInfo, str, str, str]] = None
         self._update_check_in_progress = False
+        self._manual_update_check_requested = False
         self._update_prepare_in_progress = False
         self._update_in_progress = False
         self._tooltips = []
@@ -462,6 +464,25 @@ class CodexMonitorApp:
         self._force_square_button(self.manual_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.manual_button, "Fetch quota")
 
+        check_update_text = self._material_icon_text("update")
+        self.check_update_button = ctk.CTkButton(
+            status_frame,
+            text=check_update_text or "↻",
+            command=self.check_for_updates_manually,
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(18),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        self.check_update_button.grid(row=0, column=7, sticky="e", padx=(0, 6), pady=7)
+        self._force_square_button(self.check_update_button, self.TOOLBAR_BUTTON_SIZE)
+        self._attach_tooltip(self.check_update_button, "Check for updates")
+
         update_text = self._material_icon_text("download")
         self.update_button = ctk.CTkButton(
             status_frame,
@@ -477,7 +498,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.update_button.grid(row=0, column=7, sticky="e", padx=(0, 6), pady=7)
+        self.update_button.grid(row=0, column=8, sticky="e", padx=(0, 6), pady=7)
         self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.update_button, "Install update")
 
@@ -496,7 +517,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.theme_button.grid(row=0, column=8, sticky="e", padx=(0, 10), pady=7)
+        self.theme_button.grid(row=0, column=9, sticky="e", padx=(0, 10), pady=7)
         self._force_square_button(self.theme_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.theme_button, "Toggle theme")
         self._sync_status_textbox()
@@ -517,6 +538,7 @@ class CodexMonitorApp:
             "copy": "e14d",
             "download": "f090",
             "refresh": "e5d5",
+            "update": "e923",
             "delete": "e92e",
             "light_mode": "e518",
             "dark_mode": "e51c",
@@ -930,10 +952,10 @@ class CodexMonitorApp:
         )
         if show_button:
             self.update_button.grid()
-            self.theme_button.grid_configure(column=8)
+            self.theme_button.grid_configure(column=9)
         else:
             self.update_button.grid_remove()
-            self.theme_button.grid_configure(column=7)
+            self.theme_button.grid_configure(column=8)
 
     def _update_manual_button_state(self) -> None:
         if not self.manual_button:
@@ -980,6 +1002,23 @@ class CodexMonitorApp:
                     font=self._material_icon_font(18),
                 )
                 self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
+
+        check_update_button = getattr(self, "check_update_button", None)
+        if check_update_button:
+            check_update_text = self._material_icon_text("update")
+            if self._update_check_in_progress or self._update_in_progress:
+                check_update_button.configure(
+                    state="disabled",
+                    text=check_update_text or "↻",
+                    font=self._material_icon_font(18),
+                )
+            else:
+                check_update_button.configure(
+                    state="normal",
+                    text=check_update_text or "↻",
+                    font=self._material_icon_font(18),
+                )
+            self._force_square_button(check_update_button, self.TOOLBAR_BUTTON_SIZE)
 
         current_email = self.state.current_account_email
         if self.auto_fetch_menu:
@@ -1336,7 +1375,24 @@ class CodexMonitorApp:
         if self._update_check_in_progress or self._update_in_progress:
             return
 
+        self._manual_update_check_requested = False
         self._update_check_in_progress = True
+        self._update_manual_button_state()
+        threading.Thread(target=self._bg_check_for_updates, daemon=True).start()
+
+    def check_for_updates_manually(self) -> None:
+        if self._update_in_progress:
+            self.status_var.set("Update installation is already in progress.")
+            return
+
+        self._manual_update_check_requested = True
+        self.status_var.set("Checking for updates...")
+        if self._update_check_in_progress:
+            self._update_manual_button_state()
+            return
+
+        self._update_check_in_progress = True
+        self._update_manual_button_state()
         threading.Thread(target=self._bg_check_for_updates, daemon=True).start()
 
     def _bg_check_for_updates(self) -> None:
@@ -1366,6 +1422,8 @@ class CodexMonitorApp:
         release: Optional[ReleaseInfo],
         error_message: Optional[str],
     ) -> None:
+        was_manual_check = getattr(self, "_manual_update_check_requested", False)
+        self._manual_update_check_requested = False
         self._update_check_in_progress = False
         if error_message:
             resolved_release = self._available_release
@@ -1374,7 +1432,19 @@ class CodexMonitorApp:
 
         self._available_release = resolved_release
 
-        if resolved_release:
+        if was_manual_check and error_message:
+            self.status_var.set(error_message)
+        elif was_manual_check and resolved_release:
+            self.status_var.set(
+                f"Update available: v{resolved_release.version}. Preparing download..."
+            )
+            self._notify_user(
+                APP_TITLE,
+                f"Update v{resolved_release.version} is available.",
+            )
+        elif was_manual_check:
+            self.status_var.set(f"You're already on the latest version (v{APP_VERSION}).")
+        elif resolved_release:
             current_message = self.status_var.get()
             if (
                 "Update available:" in current_message
