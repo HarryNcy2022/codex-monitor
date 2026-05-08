@@ -4,7 +4,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from .config import AUTH_FILE_PATH, AUTO_FETCH_INTERVALS, AUTO_FETCH_OPTIONS
-from .models import AuthFileSnapshot, UsageMap, UsageResponse
+from .models import AuthFileSnapshot, RateLimitWindow, UsageMap, UsageResponse
 from .storage import UsageStorage
 
 
@@ -89,27 +89,85 @@ class MonitorStateService:
     ) -> Optional[str]:
         email = response_data.get("email")
         rate_limit = response_data.get("rate_limit", {})
-        primary_window = rate_limit.get("primary_window") if rate_limit else {}
+        primary_window = self._sanitize_rate_limit_window(
+            rate_limit.get("primary_window") if rate_limit else None
+        )
+        secondary_window = self._sanitize_rate_limit_window(
+            rate_limit.get("secondary_window") if rate_limit else None
+        )
+        short_window, weekly_window = self._classify_rate_limit_windows(
+            primary_window,
+            secondary_window,
+        )
 
-        reset_at = primary_window.get("reset_at") if primary_window else None
-        used_percent = primary_window.get("used_percent", 0) if primary_window else 0
+        reset_at = weekly_window.get("reset_at") or primary_window.get("reset_at")
+        used_percent = weekly_window.get("used_percent", primary_window.get("used_percent", 0))
 
-        if not email or not reset_at:
+        if not email or not (primary_window or secondary_window):
             return None
 
         if email not in self.usage_map:
             self.usage_map[email] = {}
 
-        self.usage_map[email].update(
-            {
-                "reset_ts": reset_at,
-                "used_percent": used_percent,
-                "last_fetched": time.time(),
-            }
-        )
+        next_usage = {
+            "reset_ts": reset_at or 0,
+            "used_percent": used_percent,
+            "last_fetched": time.time(),
+        }
+        if primary_window:
+            next_usage["primary_window"] = primary_window
+        if secondary_window:
+            next_usage["secondary_window"] = secondary_window
+        if short_window:
+            next_usage["short_window"] = short_window
+        if weekly_window:
+            next_usage["weekly_window"] = weekly_window
+
+        self.usage_map[email].update(next_usage)
         self.set_current_account(email, jwt)
         self.save_data()
         return email
+
+    def _sanitize_rate_limit_window(self, value: object) -> RateLimitWindow:
+        if not isinstance(value, dict):
+            return {}
+
+        clean_window: RateLimitWindow = {}
+        for field in ("used_percent", "limit_window_seconds", "reset_after_seconds", "reset_at"):
+            raw_value = value.get(field)
+            if raw_value in (None, ""):
+                continue
+            if isinstance(raw_value, bool):
+                continue
+            if isinstance(raw_value, (int, float)):
+                clean_window[field] = raw_value
+
+        if not clean_window.get("reset_at"):
+            return {}
+        return clean_window
+
+    def _classify_rate_limit_windows(
+        self,
+        primary_window: RateLimitWindow,
+        secondary_window: RateLimitWindow,
+    ) -> Tuple[RateLimitWindow, RateLimitWindow]:
+        windows = [window for window in (primary_window, secondary_window) if window]
+        if not windows:
+            return {}, {}
+
+        weekly_candidates = [
+            window
+            for window in windows
+            if (window.get("limit_window_seconds") or 0) >= 6 * 24 * 60 * 60
+        ]
+        weekly_window = weekly_candidates[0] if weekly_candidates else max(
+            windows,
+            key=lambda window: window.get("limit_window_seconds") or 0,
+        )
+
+        short_candidates = [window for window in windows if window is not weekly_window]
+        short_window = short_candidates[0] if short_candidates else {}
+        return short_window, weekly_window
 
     def get_due_auto_fetch_jwt(self, now: float) -> Optional[str]:
         current_email = self.current_account_email
@@ -149,9 +207,17 @@ class MonitorStateService:
             self.usage_map.items(),
             key=lambda item: (
                 0 if item[0] == self.current_account_email else 1,
-                item[1].get("reset_ts", 0),
+                self._account_weekly_reset_ts(item[1]),
             ),
         )
+
+    def _account_weekly_reset_ts(self, account_data: dict) -> float:
+        weekly_window = account_data.get("weekly_window")
+        if isinstance(weekly_window, dict):
+            reset_at = weekly_window.get("reset_at")
+            if isinstance(reset_at, (int, float)) and not isinstance(reset_at, bool):
+                return reset_at
+        return account_data.get("reset_ts", 0) or 0
 
     def _restore_current_account_email(self) -> Optional[str]:
         saved_current_email = self.storage.get_meta_value("current_account_email")

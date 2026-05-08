@@ -1,8 +1,11 @@
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 
-def format_reset_display(reset_ts: float, now_ts: float) -> str:
+def format_reset_display(reset_ts: Optional[float], now_ts: float) -> str:
+    if not reset_ts:
+        return "-"
+
     reset_time_str = datetime.fromtimestamp(reset_ts).strftime("%Y-%m-%d %H:%M")
 
     if now_ts >= reset_ts:

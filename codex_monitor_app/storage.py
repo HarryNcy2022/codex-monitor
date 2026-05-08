@@ -200,10 +200,34 @@ class UsageStorage:
         return sanitized
 
     def _sanitize_account_data(self, account_data: dict) -> AccountUsage:
-        clean_account = dict(account_data)
-        clean_account.pop("jwt", None)
-        clean_account.pop("auto_fetch", None)
+        clean_account: AccountUsage = {}
+        for field in ("reset_ts", "used_percent", "last_fetched"):
+            value = account_data.get(field)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                clean_account[field] = value
+
+        for field in (
+            "primary_window",
+            "secondary_window",
+            "short_window",
+            "weekly_window",
+        ):
+            window = self._sanitize_rate_limit_window(account_data.get(field))
+            if window:
+                clean_account[field] = window
+
         return clean_account
+
+    def _sanitize_rate_limit_window(self, value: object) -> Dict[str, float]:
+        if not isinstance(value, dict):
+            return {}
+
+        clean_window: Dict[str, float] = {}
+        for field in ("used_percent", "limit_window_seconds", "reset_after_seconds", "reset_at"):
+            raw_value = value.get(field)
+            if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+                clean_window[field] = raw_value
+        return clean_window
 
     def _load_meta_file(self) -> Dict[str, str]:
         if not os.path.exists(self.meta_path):
@@ -247,7 +271,17 @@ class UsageStorage:
         if not isinstance(value, dict):
             return False
 
-        known_fields = {"reset_ts", "used_percent", "auto_fetch", "last_fetched", "jwt"}
+        known_fields = {
+            "reset_ts",
+            "used_percent",
+            "primary_window",
+            "secondary_window",
+            "short_window",
+            "weekly_window",
+            "auto_fetch",
+            "last_fetched",
+            "jwt",
+        }
         return any(field in value for field in known_fields)
 
     def _merge_account_payloads(
@@ -267,7 +301,15 @@ class UsageStorage:
         prefer_newer_usage = new_last_fetched >= existing_last_fetched
 
         if prefer_newer_usage:
-            for field in ("reset_ts", "used_percent", "last_fetched"):
+            for field in (
+                "reset_ts",
+                "used_percent",
+                "primary_window",
+                "secondary_window",
+                "short_window",
+                "weekly_window",
+                "last_fetched",
+            ):
                 if field in new_value:
                     merged[field] = new_value[field]
 

@@ -234,6 +234,66 @@ class MonitorStateServiceTests(unittest.TestCase):
                 ["active@example.com", "old@example.com", "middle@example.com"],
             )
 
+    def test_apply_usage_response_tracks_short_and_weekly_windows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_path = Path(temp_dir) / "usage.json"
+            meta_path = Path(temp_dir) / "usage.meta.json"
+            state = MonitorStateService(UsageStorage(str(storage_path), str(meta_path)))
+
+            email = state.apply_usage_response(
+                {
+                    "email": "user@example.com",
+                    "rate_limit": {
+                        "primary_window": {
+                            "used_percent": 25,
+                            "limit_window_seconds": 16000,
+                            "reset_after_seconds": 16000,
+                            "reset_at": 1778219420,
+                        },
+                        "secondary_window": {
+                            "used_percent": 40,
+                            "limit_window_seconds": 604800,
+                            "reset_after_seconds": 604700,
+                            "reset_at": 1778806220,
+                        },
+                    },
+                },
+                "jwt",
+            )
+
+            account = state.usage_map["user@example.com"]
+            self.assertEqual(email, "user@example.com")
+            self.assertEqual(account["short_window"]["reset_at"], 1778219420)
+            self.assertEqual(account["weekly_window"]["reset_at"], 1778806220)
+            self.assertEqual(account["reset_ts"], 1778806220)
+            self.assertEqual(account["used_percent"], 40)
+
+    def test_apply_usage_response_handles_missing_secondary_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_path = Path(temp_dir) / "usage.json"
+            meta_path = Path(temp_dir) / "usage.meta.json"
+            state = MonitorStateService(UsageStorage(str(storage_path), str(meta_path)))
+
+            email = state.apply_usage_response(
+                {
+                    "email": "user@example.com",
+                    "rate_limit": {
+                        "primary_window": {
+                            "used_percent": 15,
+                            "limit_window_seconds": 604800,
+                            "reset_at": 1778806220,
+                        },
+                        "secondary_window": None,
+                    },
+                },
+                "jwt",
+            )
+
+            account = state.usage_map["user@example.com"]
+            self.assertEqual(email, "user@example.com")
+            self.assertNotIn("short_window", account)
+            self.assertEqual(account["weekly_window"]["reset_at"], 1778806220)
+
     def test_export_import_merges_accounts_and_config(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source_storage_path = Path(temp_dir) / "source.json"

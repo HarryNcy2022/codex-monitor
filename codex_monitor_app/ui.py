@@ -188,13 +188,14 @@ class CodexMonitorApp:
         header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 3))
         self._configure_account_columns(header_frame)
         header_frame.grid_columnconfigure(
-            4,
+            5,
             minsize=self._table_scrollbar_gutter_width(),
         )
         self._build_header_cell(header_frame, "Account Email", 0, "w")
         self._build_header_cell(header_frame, "Quota", 1, "w")
-        self._build_header_cell(header_frame, "Reset Time", 2, "w")
-        self._build_header_cell(header_frame, "Action", 3, "e")
+        self._build_header_cell(header_frame, "5h Reset", 2, "w")
+        self._build_header_cell(header_frame, "Weekly Reset", 3, "w")
+        self._build_header_cell(header_frame, "Action", 4, "e")
 
         body_frame = ctk.CTkFrame(
             accounts_shell,
@@ -398,13 +399,14 @@ class CodexMonitorApp:
         frame.grid_columnconfigure(0, weight=5, uniform="account-cols")
         frame.grid_columnconfigure(1, weight=2, uniform="account-cols")
         frame.grid_columnconfigure(2, weight=4, uniform="account-cols")
-        frame.grid_columnconfigure(3, weight=1, uniform="account-cols", minsize=58)
+        frame.grid_columnconfigure(3, weight=4, uniform="account-cols")
+        frame.grid_columnconfigure(4, weight=1, uniform="account-cols", minsize=58)
 
     def _table_scrollbar_gutter_width(self) -> int:
         return self.TABLE_SCROLLBAR_WIDTH + self.TABLE_SCROLLBAR_PAD_X
 
     def _fetch_button_icon(self) -> str:
-        return "↻"
+        return "⟳"
 
     def _appearance_toggle_icon(self) -> str:
         if ctk.get_appearance_mode().lower() == "dark":
@@ -484,6 +486,26 @@ class CodexMonitorApp:
             padx=10,
             pady=self.TABLE_ROW_PAD_Y,
         )
+
+    def _window_reset_ts(self, data: dict, field: str) -> Optional[float]:
+        window = data.get(field)
+        if not isinstance(window, dict):
+            return None
+
+        reset_at = window.get("reset_at")
+        if isinstance(reset_at, (int, float)) and not isinstance(reset_at, bool):
+            return reset_at
+        return None
+
+    def _window_used_percent(self, data: dict, field: str) -> Optional[float]:
+        window = data.get(field)
+        if not isinstance(window, dict):
+            return None
+
+        used_percent = window.get("used_percent")
+        if isinstance(used_percent, (int, float)) and not isinstance(used_percent, bool):
+            return used_percent
+        return None
 
     def _clear_account_rows(self) -> None:
         for widget in self.accounts_rows_frame.winfo_children():
@@ -577,7 +599,7 @@ class CodexMonitorApp:
         self.status_var.set(f"Copied {email}.")
 
     def _remove_button_icon(self) -> str:
-        return "⌫"
+        return "×"
 
     def _confirm_remove_account(self, email: str) -> bool:
         tokens = self._theme_tokens()
@@ -830,7 +852,8 @@ class CodexMonitorApp:
         self,
         email: str,
         quota_left: str,
-        reset_display: str,
+        short_reset_display: str,
+        weekly_reset_display: str,
         is_current: bool,
         index: int,
     ) -> None:
@@ -899,9 +922,16 @@ class CodexMonitorApp:
         )
         self._build_value_label(
             row,
-            reset_display,
+            short_reset_display,
             row_text,
             2,
+            anchor="w",
+        )
+        self._build_value_label(
+            row,
+            weekly_reset_display,
+            row_text,
+            3,
             anchor="w",
         )
 
@@ -919,7 +949,7 @@ class CodexMonitorApp:
         )
         remove_button.grid(
             row=0,
-            column=3,
+            column=4,
             sticky="e",
             padx=10,
             pady=self.TABLE_ROW_PAD_Y,
@@ -1484,20 +1514,31 @@ class CodexMonitorApp:
             now_ts = datetime.now().timestamp()
             for index, (email, data) in enumerate(items):
                 try:
-                    reset_ts = data.get("reset_ts", 0)
-                    used_percent = data.get("used_percent", 0)
+                    short_reset_ts = self._window_reset_ts(data, "short_window")
+                    weekly_reset_ts = self._window_reset_ts(data, "weekly_window")
+                    if weekly_reset_ts is None:
+                        weekly_reset_ts = data.get("reset_ts", 0)
+                    weekly_used_percent = self._window_used_percent(
+                        data,
+                        "weekly_window",
+                    )
+                    if weekly_used_percent is None:
+                        weekly_used_percent = data.get("used_percent", 0)
                     is_current = email == self.state.current_account_email
-                    display_text = format_reset_display(reset_ts, now_ts)
-                    quota_left = format_quota_left(used_percent)
+                    short_reset_display = format_reset_display(short_reset_ts, now_ts)
+                    weekly_reset_display = format_reset_display(weekly_reset_ts, now_ts)
+                    quota_left = format_quota_left(weekly_used_percent)
                 except Exception:
-                    display_text = "Error"
+                    short_reset_display = "Error"
+                    weekly_reset_display = "Error"
                     quota_left = "Error"
                     is_current = email == self.state.current_account_email
 
                 self._build_account_row(
                     email=email,
                     quota_left=quota_left,
-                    reset_display=display_text,
+                    short_reset_display=short_reset_display,
+                    weekly_reset_display=weekly_reset_display,
                     is_current=is_current,
                     index=index,
                 )
