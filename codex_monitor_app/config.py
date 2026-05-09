@@ -29,11 +29,19 @@ LOCAL_STORAGE_META_FILE = os.path.expanduser("~/.codex_usage_store.meta.json")
 # API URL
 USAGE_API_URL = "https://chatgpt.com/backend-api/wham/usage"
 
-AUTO_FETCH_INTERVALS = {
-    "1 Hr": 3600,
-    "3 Hrs": 10800,
-    "12 Hrs": 43200,
-    "24 Hrs": 86400,
-}
+# Auto-fetch intervals
+SEC_IN_MIN = 60
+SEC_IN_HOUR = 3600
 
+# Structured interval definitions for better maintainability
+# (Value, Unit Seconds, Label Unit)
+_INTERVAL_DEFS = [
+    (15, SEC_IN_MIN, "Mins"),
+    (1, SEC_IN_HOUR, "Hr"),
+    (3, SEC_IN_HOUR, "Hrs"),
+    (12, SEC_IN_HOUR, "Hrs"),
+    (24, SEC_IN_HOUR, "Hrs"),
+]
+
+AUTO_FETCH_INTERVALS = {f"{v} {u}": v * s for v, s, u in _INTERVAL_DEFS}
 AUTO_FETCH_OPTIONS = ["None", *AUTO_FETCH_INTERVALS.keys()]
