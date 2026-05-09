@@ -16,6 +16,7 @@ class AccountUsage(TypedDict, total=False):
     short_window: RateLimitWindow
     weekly_window: RateLimitWindow
     last_fetched: float
+    archived: bool
 
 
 class AuthTokens(TypedDict, total=False):

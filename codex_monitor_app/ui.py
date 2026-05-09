@@ -7,7 +7,7 @@ import tkinter as tk
 import urllib.error
 from datetime import datetime
 from tkinter import filedialog, messagebox
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
@@ -153,11 +153,12 @@ class CodexMonitorApp:
         self._last_seen_auth_signature = self._get_auth_file_signature()
         self._last_auth_refresh_marker: Optional[str] = None
         self._last_seen_access_token: Optional[str] = None
-        self._remove_confirm_result = False
+        self._account_confirm_result = False
         self.manual_button: Optional[ctk.CTkButton] = None
         self.copy_status_button: Optional[ctk.CTkButton] = None
         self.export_button: Optional[ctk.CTkButton] = None
         self.import_button: Optional[ctk.CTkButton] = None
+        self.show_archived_button: Optional[ctk.CTkButton] = None
         self.auto_fetch_label: Optional[ctk.CTkLabel] = None
         self.auto_fetch_menu: Optional[ctk.CTkOptionMenu] = None
         self.status_textbox: Optional[tk.Text] = None
@@ -180,6 +181,7 @@ class CodexMonitorApp:
         self._spinner_index = 0
         self.sort_column: Optional[str] = self.state.sort_column
         self.sort_asc: bool = self.state.sort_asc
+        self.show_archived: bool = self.state.show_archived
 
         self.setup_ui()
         self.refresh_ui()
@@ -471,6 +473,27 @@ class CodexMonitorApp:
         self._force_square_button(self.manual_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.manual_button, "Fetch quota")
 
+        self.show_archived_button = ctk.CTkButton(
+            status_frame,
+            text=self._show_archived_icon(),
+            command=self.toggle_show_archived,
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(18),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        self.show_archived_button.grid(row=0, column=7, sticky="e", padx=(0, 6), pady=7)
+        self._force_square_button(self.show_archived_button, self.TOOLBAR_BUTTON_SIZE)
+        self._attach_tooltip(
+            self.show_archived_button,
+            "Hide archived accounts" if self.show_archived else "Show archived accounts",
+        )
+
         check_update_text = self._material_icon_text("update")
         self.check_update_button = ctk.CTkButton(
             status_frame,
@@ -486,7 +509,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.check_update_button.grid(row=0, column=7, sticky="e", padx=(0, 6), pady=7)
+        self.check_update_button.grid(row=0, column=8, sticky="e", padx=(0, 6), pady=7)
         self._force_square_button(self.check_update_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.check_update_button, "Check for updates")
 
@@ -504,7 +527,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.update_button.grid(row=0, column=8, sticky="e", padx=(0, 6), pady=7)
+        self.update_button.grid(row=0, column=9, sticky="e", padx=(0, 6), pady=7)
 
         theme_text = self._appearance_toggle_icon()
         self.theme_button = ctk.CTkButton(
@@ -521,7 +544,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.theme_button.grid(row=0, column=9, sticky="e", padx=(0, 10), pady=7)
+        self.theme_button.grid(row=0, column=10, sticky="e", padx=(0, 10), pady=7)
         self._force_square_button(self.theme_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.theme_button, "Toggle theme")
 
@@ -533,7 +556,7 @@ class CodexMonitorApp:
         frame.grid_columnconfigure(1, weight=2, uniform="account-cols")
         frame.grid_columnconfigure(2, weight=4, uniform="account-cols")
         frame.grid_columnconfigure(3, weight=4, uniform="account-cols")
-        frame.grid_columnconfigure(4, weight=1, uniform="account-cols", minsize=58)
+        frame.grid_columnconfigure(4, weight=2, uniform="account-cols", minsize=92)
 
     def _table_scrollbar_gutter_width(self) -> int:
         return self.TABLE_SCROLLBAR_WIDTH + self.TABLE_SCROLLBAR_PAD_X
@@ -545,6 +568,10 @@ class CodexMonitorApp:
             "refresh": "e5d5",
             "update": "e923",
             "delete": "e92e",
+            "archive": "e149",
+            "unarchive": "e169",
+            "visibility": "e8f4",
+            "visibility_off": "e8f5",
             "light_mode": "e518",
             "dark_mode": "e51c",
             "upload": "f09b",
@@ -590,6 +617,11 @@ class CodexMonitorApp:
             return self._material_icon_text("light_mode") or "☀"
         return self._material_icon_text("dark_mode") or "☾"
 
+    def _show_archived_icon(self) -> str:
+        if self.show_archived:
+            return self._material_icon_text("visibility_off") or "○"
+        return self._material_icon_text("visibility") or "●"
+
     def rebuild_ui(self) -> None:
         status_message = self.status_var.get() if hasattr(self, "status_var") else ""
         for widget in self.root.winfo_children():
@@ -598,6 +630,7 @@ class CodexMonitorApp:
         self.copy_status_button = None
         self.export_button = None
         self.import_button = None
+        self.show_archived_button = None
         self.auto_fetch_label = None
         self.auto_fetch_menu = None
         self.status_textbox = None
@@ -814,12 +847,19 @@ class CodexMonitorApp:
         self.root.clipboard_append(email)
         self.status_var.set(f"Copied {email}.")
 
-    def _confirm_remove_account(self, email: str) -> bool:
+    def _confirm_account_action(
+        self,
+        *,
+        title: str,
+        heading: str,
+        message: str,
+        confirm_text: str,
+    ) -> bool:
         tokens = self._theme_tokens()
-        self._remove_confirm_result = False
+        self._account_confirm_result = False
 
         dialog = ctk.CTkToplevel(self.root)
-        dialog.title("Remove account")
+        dialog.title(title)
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.configure(fg_color=tokens["card"])
@@ -836,7 +876,7 @@ class CodexMonitorApp:
 
         title_label = ctk.CTkLabel(
             container,
-            text="Remove account?",
+            text=heading,
             anchor="w",
             font=ctk.CTkFont(size=15, weight="bold"),
             text_color=tokens["text"],
@@ -845,7 +885,7 @@ class CodexMonitorApp:
 
         message_label = ctk.CTkLabel(
             container,
-            text=f"This will remove stored account info for:\n{email}",
+            text=message,
             anchor="w",
             justify="left",
             font=ctk.CTkFont(size=12),
@@ -863,7 +903,7 @@ class CodexMonitorApp:
             if closed:
                 return
             closed = True
-            self._remove_confirm_result = result
+            self._account_confirm_result = result
             try:
                 dialog.grab_release()
             except tk.TclError:
@@ -888,7 +928,7 @@ class CodexMonitorApp:
 
         confirm_button = ctk.CTkButton(
             buttons,
-            text="Confirm",
+            text=confirm_text,
             command=lambda: close_with(True),
             corner_radius=8,
             height=30,
@@ -917,7 +957,23 @@ class CodexMonitorApp:
         dialog.lift()
         confirm_button.focus_set()
         self.root.wait_window(dialog)
-        return self._remove_confirm_result
+        return self._account_confirm_result
+
+    def _confirm_remove_account(self, email: str) -> bool:
+        return self._confirm_account_action(
+            title="Remove account",
+            heading="Remove account?",
+            message=f"This will remove stored account info for:\n{email}",
+            confirm_text="Confirm",
+        )
+
+    def _confirm_archive_account(self, email: str) -> bool:
+        return self._confirm_account_action(
+            title="Archive account",
+            heading="Archive account?",
+            message=f"This will hide the account from the default list:\n{email}",
+            confirm_text="Archive",
+        )
 
     def remove_account(self, email: str) -> None:
         if not self._confirm_remove_account(email):
@@ -927,6 +983,28 @@ class CodexMonitorApp:
             self.refresh_ui(skip_auto_fetch=True)
             self._update_manual_button_state()
             self.status_var.set(f"Removed {email}.")
+
+    def toggle_archive_account(self, email: str, archived: bool) -> None:
+        if archived:
+            if self.state.unarchive_account(email):
+                self.refresh_ui(skip_auto_fetch=True)
+                self.status_var.set(f"Unarchived {email}.")
+            return
+
+        if not self._confirm_archive_account(email):
+            return
+
+        if self.state.archive_account(email):
+            self.refresh_ui(skip_auto_fetch=True)
+            self.status_var.set(f"Archived {email}.")
+
+    def toggle_show_archived(self) -> None:
+        self.show_archived = not self.show_archived
+        self.state.save_show_archived_preference(self.show_archived)
+        self.rebuild_ui()
+        self.status_var.set(
+            "Showing archived accounts." if self.show_archived else "Hiding archived accounts."
+        )
 
     def export_data(self) -> None:
         default_name = f"codex-monitor-data-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
@@ -992,10 +1070,10 @@ class CodexMonitorApp:
         )
         if show_button:
             self.update_button.grid()
-            self.theme_button.grid_configure(column=9)
+            self.theme_button.grid_configure(column=10)
         else:
             self.update_button.grid_remove()
-            self.theme_button.grid_configure(column=8)
+            self.theme_button.grid_configure(column=9)
 
     def _animate_spinner(self) -> None:
         if not self.manual_button or self._pending_fetches == 0:
@@ -1096,6 +1174,13 @@ class CodexMonitorApp:
             )
             self._force_square_button(self.theme_button, self.TOOLBAR_BUTTON_SIZE)
 
+        if self.show_archived_button:
+            self.show_archived_button.configure(
+                text=self._show_archived_icon(),
+                font=self._material_icon_font(18),
+            )
+            self._force_square_button(self.show_archived_button, self.TOOLBAR_BUTTON_SIZE)
+
     def _begin_fetch(self, status_message: str) -> None:
         self._pending_fetches += 1
         self.status_var.set(status_message)
@@ -1129,21 +1214,31 @@ class CodexMonitorApp:
         short_reset_display: str,
         weekly_reset_display: str,
         is_current: bool,
+        is_archived: bool,
         index: int,
     ) -> None:
         tokens = self._theme_tokens()
-        row_bg = tokens["current_bg"] if is_current else (
+        row_bg = tokens["current_bg"] if is_current and not is_archived else (
             tokens["row_even"] if index % 2 == 0 else tokens["row_odd"]
         )
-        row_text = tokens["current_fg"] if is_current else tokens["table_fg"]
-        email_display = f"{email}   ACTIVE" if is_current else email
+        row_text = tokens["muted"] if is_archived else (
+            tokens["current_fg"] if is_current else tokens["table_fg"]
+        )
+        if is_current and is_archived:
+            email_display = f"{email}   ACTIVE, ARCHIVED"
+        elif is_current:
+            email_display = f"{email}   ACTIVE"
+        elif is_archived:
+            email_display = f"{email}   ARCHIVED"
+        else:
+            email_display = email
 
         row = ctk.CTkFrame(
             self.accounts_rows_frame,
             fg_color=row_bg,
             corner_radius=12,
             border_width=1,
-            border_color=tokens["current_border"] if is_current else tokens["row_border"],
+            border_color=tokens["current_border"] if is_current and not is_archived else tokens["row_border"],
         )
         row.grid(
             row=index,
@@ -1167,7 +1262,7 @@ class CodexMonitorApp:
             email_cell,
             text=email_display,
             anchor="w",
-            font=ctk.CTkFont(size=11, weight="bold" if is_current else "normal"),
+            font=ctk.CTkFont(size=11, weight="bold" if is_current and not is_archived else "normal"),
             text_color=row_text,
         )
         email_label.grid(row=0, column=0, sticky="ew")
@@ -1214,9 +1309,44 @@ class CodexMonitorApp:
             anchor="w",
         )
 
+        actions_cell = ctk.CTkFrame(row, fg_color="transparent")
+        actions_cell.grid(
+            row=0,
+            column=4,
+            sticky="e",
+            padx=10,
+            pady=self.TABLE_ROW_PAD_Y,
+        )
+
+        archive_text = self._material_icon_text("unarchive" if is_archived else "archive")
+        archive_button = ctk.CTkButton(
+            actions_cell,
+            text=archive_text or ("↑" if is_archived else "↓"),
+            command=lambda account_email=email, account_archived=is_archived: self.toggle_archive_account(
+                account_email,
+                account_archived,
+            ),
+            corner_radius=self.ROW_BUTTON_RADIUS,
+            height=self.ROW_BUTTON_SIZE,
+            width=self.ROW_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(16),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        archive_button.grid(row=0, column=0, sticky="e", padx=(0, 6))
+        self._force_square_button(archive_button, self.ROW_BUTTON_SIZE)
+        self._attach_tooltip(
+            archive_button,
+            "Unarchive account" if is_archived else "Archive account",
+            row_tooltip=True,
+        )
+
         remove_text = self._material_icon_text("delete")
         remove_button = ctk.CTkButton(
-            row,
+            actions_cell,
             text=remove_text or "×",
             command=lambda account_email=email: self.remove_account(account_email),
             corner_radius=self.ROW_BUTTON_RADIUS,
@@ -1229,13 +1359,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        remove_button.grid(
-            row=0,
-            column=4,
-            sticky="e",
-            padx=10,
-            pady=self.TABLE_ROW_PAD_Y,
-        )
+        remove_button.grid(row=0, column=1, sticky="e")
         self._force_square_button(remove_button, self.ROW_BUTTON_SIZE)
         self._attach_tooltip(remove_button, "Remove account", row_tooltip=True)
 
@@ -1808,6 +1932,42 @@ class CodexMonitorApp:
                 daemon=True,
             ).start()
 
+    def _is_archived_account(self, data: dict) -> bool:
+        return data.get("archived") is True
+
+    def _get_account_sort_key(self, item: Tuple[str, dict]):
+        email, data = item
+        if self.sort_column == "email":
+            return email.lower()
+        if self.sort_column == "quota":
+            value = self._window_used_percent(data, "weekly_window")
+            return value if value is not None else data.get("used_percent", 0)
+        if self.sort_column == "short_reset":
+            return self._window_reset_ts(data, "short_window") or 0
+        if self.sort_column == "weekly_reset":
+            value = self._window_reset_ts(data, "weekly_window")
+            return value if value is not None else data.get("reset_ts", 0)
+        return email.lower()
+
+    def _visible_sorted_account_items(self) -> List[Tuple[str, dict]]:
+        items = [
+            item for item in self.state.usage_map.items()
+            if self.show_archived or not self._is_archived_account(item[1])
+        ]
+        items.sort(
+            key=self._get_account_sort_key,
+            reverse=bool(self.sort_column and not self.sort_asc),
+        )
+
+        active_email = self.state.current_account_email
+        items.sort(
+            key=lambda item: (
+                1 if self._is_archived_account(item[1]) else 0,
+                0 if item[0] == active_email and not self._is_archived_account(item[1]) else 1,
+            )
+        )
+        return items
+
     def refresh_ui(self, skip_auto_fetch: bool = False) -> None:
         if self._timer_id:
             self.root.after_cancel(self._timer_id)
@@ -1816,40 +1976,7 @@ class CodexMonitorApp:
             self.check_auto_fetch()
         self._clear_account_rows()
 
-        items = list(self.state.usage_map.items())
-        
-        def _get_sort_key(item: Tuple[str, dict]):
-            email, data = item
-            if self.sort_column == "email":
-                val = email.lower()
-            elif self.sort_column == "quota":
-                val = self._window_used_percent(data, "weekly_window")
-                if val is None:
-                    val = data.get("used_percent", 0)
-            elif self.sort_column == "short_reset":
-                val = self._window_reset_ts(data, "short_window") or 0
-            elif self.sort_column == "weekly_reset":
-                val = self._window_reset_ts(data, "weekly_window")
-                if val is None:
-                    val = data.get("reset_ts", 0)
-            else:
-                val = email.lower()
-            return val
-
-        if self.sort_column:
-            items.sort(key=_get_sort_key, reverse=not self.sort_asc)
-        else:
-            items.sort(key=_get_sort_key)
-            
-        active_email = self.state.current_account_email
-        active_item = None
-        for i, item in enumerate(items):
-            if item[0] == active_email:
-                active_item = items.pop(i)
-                break
-                
-        if active_item:
-            items.insert(0, active_item)
+        items = self._visible_sorted_account_items()
 
         if not items:
             empty_label = ctk.CTkLabel(
@@ -1874,6 +2001,7 @@ class CodexMonitorApp:
                     if weekly_used_percent is None:
                         weekly_used_percent = data.get("used_percent", 0)
                     is_current = email == self.state.current_account_email
+                    is_archived = self._is_archived_account(data)
                     short_reset_display = format_reset_display(short_reset_ts, now_ts)
                     weekly_reset_display = format_reset_display(weekly_reset_ts, now_ts)
                     quota_left = format_quota_left(weekly_used_percent)
@@ -1882,6 +2010,7 @@ class CodexMonitorApp:
                     weekly_reset_display = "Error"
                     quota_left = "Error"
                     is_current = email == self.state.current_account_email
+                    is_archived = self._is_archived_account(data)
 
                 self._build_account_row(
                     email=email,
@@ -1889,6 +2018,7 @@ class CodexMonitorApp:
                     short_reset_display=short_reset_display,
                     weekly_reset_display=weekly_reset_display,
                     is_current=is_current,
+                    is_archived=is_archived,
                     index=index,
                 )
 

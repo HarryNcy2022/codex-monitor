@@ -205,6 +205,9 @@ class UsageStorage:
         if "sort_asc" in meta:
             sanitized["sort_asc"] = bool(meta.get("sort_asc"))
 
+        if "show_archived" in meta:
+            sanitized["show_archived"] = bool(meta.get("show_archived"))
+
         return sanitized
 
     def _sanitize_account_data(self, account_data: dict) -> AccountUsage:
@@ -223,6 +226,9 @@ class UsageStorage:
             window = self._sanitize_rate_limit_window(account_data.get(field))
             if window:
                 clean_account[field] = window
+
+        if account_data.get("archived") is True:
+            clean_account["archived"] = True
 
         return clean_account
 
@@ -289,6 +295,7 @@ class UsageStorage:
             "auto_fetch",
             "last_fetched",
             "jwt",
+            "archived",
         }
         return any(field in value for field in known_fields)
 
@@ -330,5 +337,10 @@ class UsageStorage:
 
         if "jwt" in new_value:
             merged["jwt"] = new_value["jwt"]
+
+        if "archived" in new_value:
+            merged["archived"] = new_value["archived"]
+        elif "archived" in existing_value:
+            merged["archived"] = existing_value["archived"]
 
         return merged

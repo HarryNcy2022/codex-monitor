@@ -48,6 +48,7 @@ class FakeState:
         self.due_auto_fetch_jwt = None
         self.auto_fetch_interval = "None"
         self.usage_map = {}
+        self.show_archived = False
 
     def get_latest_jwt_for_fetch(self, _email=None):
         return self.latest_jwt
@@ -69,6 +70,9 @@ class FakeState:
 
     def get_auto_fetch_value(self):
         return self.auto_fetch_interval
+
+    def save_show_archived_preference(self, show_archived):
+        self.show_archived = show_archived
 
 
 class FakeAuthFileService:
@@ -234,6 +238,27 @@ class MonitorStateServiceTests(unittest.TestCase):
                 ["active@example.com", "old@example.com", "middle@example.com"],
             )
 
+    def test_archive_state_persists_on_account_and_show_preference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_path = Path(temp_dir) / "usage.json"
+            meta_path = Path(temp_dir) / "usage.meta.json"
+            state = MonitorStateService(UsageStorage(str(storage_path), str(meta_path)))
+            state.usage_map = {
+                "visible@example.com": {"reset_ts": 10},
+                "hidden@example.com": {"reset_ts": 20},
+            }
+
+            self.assertTrue(state.archive_account("hidden@example.com"))
+            state.save_show_archived_preference(True)
+
+            restored = MonitorStateService(UsageStorage(str(storage_path), str(meta_path)))
+            self.assertTrue(restored.usage_map["hidden@example.com"]["archived"])
+            self.assertTrue(restored.show_archived)
+
+            self.assertTrue(restored.unarchive_account("hidden@example.com"))
+            restored = MonitorStateService(UsageStorage(str(storage_path), str(meta_path)))
+            self.assertNotIn("archived", restored.usage_map["hidden@example.com"])
+
     def test_apply_usage_response_tracks_short_and_weekly_windows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             storage_path = Path(temp_dir) / "usage.json"
@@ -376,6 +401,34 @@ class AuthFlowUiTests(unittest.TestCase):
             (title, message)
         )
         return app
+
+    def test_visible_sorted_account_items_hides_archived_and_keeps_them_last(self):
+        state = FakeState(current_email="middle@example.com")
+        state.usage_map = {
+            "middle@example.com": {"used_percent": 55},
+            "archived-high@example.com": {"used_percent": 99, "archived": True},
+            "visible-low@example.com": {"used_percent": 10},
+        }
+        app = self._build_app(FakeAuthFileService(), state=state)
+        app.sort_column = "quota"
+        app.sort_asc = False
+        app.show_archived = False
+
+        self.assertEqual(
+            [email for email, _data in app._visible_sorted_account_items()],
+            ["middle@example.com", "visible-low@example.com"],
+        )
+
+        app.show_archived = True
+
+        self.assertEqual(
+            [email for email, _data in app._visible_sorted_account_items()],
+            [
+                "middle@example.com",
+                "visible-low@example.com",
+                "archived-high@example.com",
+            ],
+        )
 
     def _release(self):
         return ReleaseInfo(

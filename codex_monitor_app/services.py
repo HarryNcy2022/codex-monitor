@@ -19,12 +19,18 @@ class MonitorStateService:
         self.sort_column: Optional[str] = self.storage.get_meta_value("sort_column")
         sort_asc_raw = self.storage.get_meta_value("sort_asc")
         self.sort_asc: bool = True if sort_asc_raw is None else bool(sort_asc_raw)
+        self.show_archived: bool = bool(self.storage.get_meta_value("show_archived"))
 
     def save_sort_preference(self, column: Optional[str], asc: bool) -> None:
         self.sort_column = column
         self.sort_asc = asc
         self.storage.set_meta_value("sort_column", column)
         self.storage.set_meta_value("sort_asc", asc)
+        self.save_data()
+
+    def save_show_archived_preference(self, show_archived: bool) -> None:
+        self.show_archived = show_archived
+        self.storage.set_meta_value("show_archived", show_archived)
         self.save_data()
 
     def save_data(self) -> None:
@@ -87,10 +93,27 @@ class MonitorStateService:
         self.save_data()
         return True
 
+    def archive_account(self, email: str) -> bool:
+        if email not in self.usage_map:
+            return False
+
+        self.usage_map[email]["archived"] = True
+        self.save_data()
+        return True
+
+    def unarchive_account(self, email: str) -> bool:
+        if email not in self.usage_map:
+            return False
+
+        self.usage_map[email].pop("archived", None)
+        self.save_data()
+        return True
+
     def import_data(self, payload: object) -> None:
         self.usage_map = self.storage.import_data(payload)
         self.current_account_email = self._restore_current_account_email()
         self.auto_fetch_interval = self._restore_auto_fetch_value()
+        self.show_archived = bool(self.storage.get_meta_value("show_archived"))
         self.session_tokens.clear()
         self.latest_auth_jwt = None
 
