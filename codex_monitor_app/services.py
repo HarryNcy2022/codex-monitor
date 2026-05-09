@@ -16,6 +16,16 @@ class MonitorStateService:
         self.current_account_email: Optional[str] = self._restore_current_account_email()
         self.auto_fetch_interval: str = self._restore_auto_fetch_value()
         self.latest_auth_jwt: Optional[str] = None
+        self.sort_column: Optional[str] = self.storage.get_meta_value("sort_column")
+        sort_asc_raw = self.storage.get_meta_value("sort_asc")
+        self.sort_asc: bool = True if sort_asc_raw is None else bool(sort_asc_raw)
+
+    def save_sort_preference(self, column: Optional[str], asc: bool) -> None:
+        self.sort_column = column
+        self.sort_asc = asc
+        self.storage.set_meta_value("sort_column", column)
+        self.storage.set_meta_value("sort_asc", asc)
+        self.save_data()
 
     def save_data(self) -> None:
         try:

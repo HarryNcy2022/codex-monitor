@@ -174,6 +174,13 @@ class CodexMonitorApp:
         self._row_tooltips = []
         self._material_symbols_available = register_material_symbols_font()
 
+        self._sort_save_timer: Optional[str] = None
+        self._spinner_timer_id: Optional[str] = None
+        self._spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._spinner_index = 0
+        self.sort_column: Optional[str] = self.state.sort_column
+        self.sort_asc: bool = self.state.sort_asc
+
         self.setup_ui()
         self.refresh_ui()
 
@@ -270,10 +277,10 @@ class CodexMonitorApp:
             5,
             minsize=self._table_scrollbar_gutter_width(),
         )
-        self._build_header_cell(header_frame, "Account Email", 0, "w")
-        self._build_header_cell(header_frame, "Quota", 1, "w")
-        self._build_header_cell(header_frame, "5h Reset", 2, "w")
-        self._build_header_cell(header_frame, "Weekly Reset", 3, "w")
+        self._build_header_cell(header_frame, "Account Email", 0, "w", sort_id="email")
+        self._build_header_cell(header_frame, "Quota", 1, "w", sort_id="quota")
+        self._build_header_cell(header_frame, "5h Reset", 2, "w", sort_id="short_reset")
+        self._build_header_cell(header_frame, "Weekly Reset", 3, "w", sort_id="weekly_reset")
         self._build_header_cell(header_frame, "Action", 4, "e")
 
         body_frame = ctk.CTkFrame(
@@ -483,24 +490,21 @@ class CodexMonitorApp:
         self._force_square_button(self.check_update_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.check_update_button, "Check for updates")
 
-        update_text = self._material_icon_text("download")
         self.update_button = ctk.CTkButton(
             status_frame,
-            text=update_text or "↓",
+            text="Update",
             command=self.update_application,
             corner_radius=self.TOOLBAR_BUTTON_RADIUS,
             height=self.TOOLBAR_BUTTON_SIZE,
-            width=self.TOOLBAR_BUTTON_SIZE,
+            width=64,
             border_spacing=0,
             anchor="center",
-            font=self._material_icon_font(18),
+            font=ctk.CTkFont(size=11, weight="bold"),
             fg_color=tokens["control_bg"],
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
         self.update_button.grid(row=0, column=8, sticky="e", padx=(0, 6), pady=7)
-        self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
-        self._attach_tooltip(self.update_button, "Install update")
 
         theme_text = self._appearance_toggle_icon()
         self.theme_button = ctk.CTkButton(
@@ -520,6 +524,7 @@ class CodexMonitorApp:
         self.theme_button.grid(row=0, column=9, sticky="e", padx=(0, 10), pady=7)
         self._force_square_button(self.theme_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.theme_button, "Toggle theme")
+
         self._sync_status_textbox()
         self._update_manual_button_state()
 
@@ -543,6 +548,7 @@ class CodexMonitorApp:
             "light_mode": "e518",
             "dark_mode": "e51c",
             "upload": "f09b",
+            "sync": "e863",
         }
         if not self._material_symbols_available:
             return ""
@@ -619,15 +625,30 @@ class CodexMonitorApp:
         text: str,
         column: int,
         anchor: str,
+        sort_id: Optional[str] = None,
     ) -> None:
         tokens = self._theme_tokens()
+        
+        display_text = text
+        if sort_id:
+            if sort_id == self.sort_column:
+                display_text += " ▲" if self.sort_asc else " ▼"
+            else:
+                display_text += " ↕"
+
         label = ctk.CTkLabel(
             parent,
-            text=text,
+            text=display_text,
             anchor=anchor,
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=tokens["header_fg"],
+            cursor="hand2" if sort_id else None,
         )
+        if sort_id:
+            label.bind("<Button-1>", lambda event, sid=sort_id: self._on_header_click(sid))
+            label.bind("<Enter>", lambda event, l=label: l.configure(text_color=tokens["control_bg"]))
+            label.bind("<Leave>", lambda event, l=label: l.configure(text_color=tokens["header_fg"]))
+            
         label.grid(
             row=0,
             column=column,
@@ -635,6 +656,25 @@ class CodexMonitorApp:
             padx=10,
             pady=self.TABLE_HEADER_PAD_Y,
         )
+
+    def _on_header_click(self, sort_id: str) -> None:
+        if self.sort_column == sort_id:
+            if self.sort_asc:
+                self.sort_asc = False
+            else:
+                self.sort_column = None
+                self.sort_asc = True
+        else:
+            self.sort_column = sort_id
+            self.sort_asc = True
+            
+        if self._sort_save_timer:
+            self.root.after_cancel(self._sort_save_timer)
+        self._sort_save_timer = self.root.after(
+            1000, lambda: self.state.save_sort_preference(self.sort_column, self.sort_asc)
+        )
+            
+        self.rebuild_ui()
 
     def _build_value_label(
         self,
@@ -957,13 +997,35 @@ class CodexMonitorApp:
             self.update_button.grid_remove()
             self.theme_button.grid_configure(column=8)
 
+    def _animate_spinner(self) -> None:
+        if not self.manual_button or self._pending_fetches == 0:
+            self._spinner_timer_id = None
+            return
+            
+        frame = self._spinner_frames[self._spinner_index]
+        self._spinner_index = (self._spinner_index + 1) % len(self._spinner_frames)
+        
+        self.manual_button.configure(
+            state="disabled",
+            text=frame,
+            font=ctk.CTkFont(size=14, weight="bold"),
+        )
+        self._force_square_button(self.manual_button, self.TOOLBAR_BUTTON_SIZE)
+        
+        self._spinner_timer_id = self.root.after(80, self._animate_spinner)
+
     def _update_manual_button_state(self) -> None:
         if not self.manual_button:
             return
 
         if self._pending_fetches > 0:
-            self.manual_button.configure(state="disabled", text="…")
+            if self._spinner_timer_id is None:
+                self._spinner_index = 0
+                self._animate_spinner()
         else:
+            if self._spinner_timer_id is not None:
+                self.root.after_cancel(self._spinner_timer_id)
+                self._spinner_timer_id = None
             refresh_text = self._material_icon_text("refresh")
             self.manual_button.configure(
                 state="normal",
@@ -973,35 +1035,26 @@ class CodexMonitorApp:
             self._force_square_button(self.manual_button, self.TOOLBAR_BUTTON_SIZE)
 
         if self.update_button:
-            update_text = self._material_icon_text("download")
             if self._update_in_progress:
                 self.update_button.configure(
                     state="disabled",
-                    text=update_text or "...",
-                    font=self._material_icon_font(18),
+                    text="Updating...",
                 )
-                self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
             elif self._update_prepare_in_progress:
                 self.update_button.configure(
                     state="disabled",
-                    text=update_text or "…",
-                    font=self._material_icon_font(18),
+                    text="Preparing...",
                 )
-                self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
             elif self._available_release:
                 self.update_button.configure(
                     state="normal",
-                    text=update_text or "↓",
-                    font=self._material_icon_font(18),
+                    text="Update",
                 )
-                self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
             else:
                 self.update_button.configure(
                     state="normal",
-                    text=update_text or "↓",
-                    font=self._material_icon_font(18),
+                    text="Update",
                 )
-                self._force_square_button(self.update_button, self.TOOLBAR_BUTTON_SIZE)
 
         check_update_button = getattr(self, "check_update_button", None)
         if check_update_button:
@@ -1763,7 +1816,41 @@ class CodexMonitorApp:
             self.check_auto_fetch()
         self._clear_account_rows()
 
-        items = self.state.sorted_usage_items()
+        items = list(self.state.usage_map.items())
+        
+        def _get_sort_key(item: Tuple[str, dict]):
+            email, data = item
+            if self.sort_column == "email":
+                val = email.lower()
+            elif self.sort_column == "quota":
+                val = self._window_used_percent(data, "weekly_window")
+                if val is None:
+                    val = data.get("used_percent", 0)
+            elif self.sort_column == "short_reset":
+                val = self._window_reset_ts(data, "short_window") or 0
+            elif self.sort_column == "weekly_reset":
+                val = self._window_reset_ts(data, "weekly_window")
+                if val is None:
+                    val = data.get("reset_ts", 0)
+            else:
+                val = email.lower()
+            return val
+
+        if self.sort_column:
+            items.sort(key=_get_sort_key, reverse=not self.sort_asc)
+        else:
+            items.sort(key=_get_sort_key)
+            
+        active_email = self.state.current_account_email
+        active_item = None
+        for i, item in enumerate(items):
+            if item[0] == active_email:
+                active_item = items.pop(i)
+                break
+                
+        if active_item:
+            items.insert(0, active_item)
+
         if not items:
             empty_label = ctk.CTkLabel(
                 self.accounts_rows_frame,

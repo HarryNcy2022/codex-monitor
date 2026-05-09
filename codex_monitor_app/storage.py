@@ -183,11 +183,11 @@ class UsageStorage:
             for email, account_data in data.items()
         }
 
-    def _sanitize_meta(self, meta: dict) -> Dict[str, str]:
+    def _sanitize_meta(self, meta: dict) -> Dict[str, Any]:
         if not isinstance(meta, dict):
             return {}
 
-        sanitized: Dict[str, str] = {}
+        sanitized: Dict[str, Any] = {}
         current_account_email = meta.get("current_account_email")
         if isinstance(current_account_email, str) and current_account_email:
             sanitized["current_account_email"] = current_account_email
@@ -196,6 +196,14 @@ class UsageStorage:
             auto_fetch = self._sanitize_auto_fetch_value(meta.get("auto_fetch"))
             if auto_fetch in AUTO_FETCH_OPTIONS:
                 sanitized["auto_fetch"] = auto_fetch
+
+        if "sort_column" in meta:
+            sort_column = meta.get("sort_column")
+            if isinstance(sort_column, str) or sort_column is None:
+                sanitized["sort_column"] = sort_column
+
+        if "sort_asc" in meta:
+            sanitized["sort_asc"] = bool(meta.get("sort_asc"))
 
         return sanitized
 
@@ -229,7 +237,7 @@ class UsageStorage:
                 clean_window[field] = raw_value
         return clean_window
 
-    def _load_meta_file(self) -> Dict[str, str]:
+    def _load_meta_file(self) -> Dict[str, Any]:
         if not os.path.exists(self.meta_path):
             return {}
 
