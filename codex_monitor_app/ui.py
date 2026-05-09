@@ -165,6 +165,11 @@ class CodexMonitorApp:
         self.check_update_button: Optional[ctk.CTkButton] = None
         self.update_button: Optional[ctk.CTkButton] = None
         self.theme_button: Optional[ctk.CTkButton] = None
+        self.header_frame: Optional[ctk.CTkFrame] = None
+        self.accounts_body_frame: Optional[ctk.CTkFrame] = None
+        self.status_frame: Optional[ctk.CTkFrame] = None
+        self.accounts_scrollbar: Optional[ctk.CTkScrollbar] = None
+        self.header_labels: Dict[str, Tuple[ctk.CTkLabel, str]] = {}
         self._available_release: Optional[ReleaseInfo] = None
         self._prepared_update: Optional[Tuple[ReleaseInfo, str, str, str]] = None
         self._update_check_in_progress = False
@@ -274,6 +279,8 @@ class CodexMonitorApp:
             border_color=tokens["border"],
         )
         header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 3))
+        self.header_frame = header_frame
+        self.header_labels = {}
         self._configure_account_columns(header_frame)
         header_frame.grid_columnconfigure(
             5,
@@ -288,11 +295,12 @@ class CodexMonitorApp:
         body_frame = ctk.CTkFrame(
             accounts_shell,
             corner_radius=10,
-            fg_color="transparent",
+            fg_color=tokens["table_shell"],
         )
         body_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=(0, 5))
         body_frame.grid_columnconfigure(0, weight=1)
         body_frame.grid_rowconfigure(0, weight=1)
+        self.accounts_body_frame = body_frame
 
         self.accounts_canvas = tk.Canvas(
             body_frame,
@@ -322,11 +330,12 @@ class CodexMonitorApp:
             sticky="ns",
             padx=(self.TABLE_SCROLLBAR_PAD_X, 0),
         )
+        self.accounts_scrollbar = accounts_scrollbar
         self.accounts_canvas.configure(yscrollcommand=accounts_scrollbar.set)
 
         self.accounts_rows_frame = ctk.CTkFrame(
             self.accounts_canvas,
-            fg_color="transparent",
+            fg_color=tokens["table_shell"],
         )
         self.accounts_rows_frame.grid_columnconfigure(0, weight=1)
         self._accounts_window_id = self.accounts_canvas.create_window(
@@ -353,6 +362,7 @@ class CodexMonitorApp:
         )
         status_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         status_frame.grid_columnconfigure(0, weight=1)
+        self.status_frame = status_frame
 
         self.status_var = tk.StringVar(value=f"Watching: {AUTH_FILE_PATH} (watchdog)")
         self.status_var.trace_add("write", self._sync_status_textbox)
@@ -636,6 +646,11 @@ class CodexMonitorApp:
         self.status_textbox = None
         self.update_button = None
         self.theme_button = None
+        self.header_frame = None
+        self.accounts_body_frame = None
+        self.status_frame = None
+        self.accounts_scrollbar = None
+        self.header_labels = {}
         self._accounts_window_id = None
         self._tooltips = []
         self._row_tooltips = []
@@ -650,7 +665,87 @@ class CodexMonitorApp:
             "light" if ctk.get_appearance_mode().lower() == "dark" else "dark"
         )
         ctk.set_appearance_mode(next_mode)
-        self.rebuild_ui()
+        self._apply_theme_to_static_ui()
+        self.refresh_ui(skip_auto_fetch=True)
+        self._update_manual_button_state()
+
+    def _apply_theme_to_static_ui(self) -> None:
+        tokens = self._theme_tokens()
+        self.root.configure(fg_color=tokens["app_bg"])
+
+        if getattr(self, "accounts_shell", None):
+            self.accounts_shell.configure(
+                fg_color=tokens["table_shell"],
+                border_color=tokens["border"],
+            )
+        if self.header_frame:
+            self.header_frame.configure(
+                fg_color=tokens["header_bg"],
+                border_color=tokens["border"],
+            )
+        if self.accounts_body_frame:
+            self.accounts_body_frame.configure(
+                fg_color=tokens["table_shell"],
+                bg_color=tokens["table_shell"],
+            )
+        if getattr(self, "accounts_canvas", None):
+            self.accounts_canvas.configure(background=tokens["table_shell"])
+        if getattr(self, "accounts_rows_frame", None):
+            self.accounts_rows_frame.configure(
+                fg_color=tokens["table_shell"],
+                bg_color=tokens["table_shell"],
+            )
+        if self.accounts_scrollbar:
+            self.accounts_scrollbar.configure(
+                fg_color=tokens["table_shell"],
+                bg_color=tokens["table_shell"],
+                button_color=tokens["scrollbar_thumb"],
+                button_hover_color=tokens["scrollbar_thumb_hover"],
+            )
+        if self.status_frame:
+            self.status_frame.configure(
+                fg_color=tokens["card"],
+                border_color=tokens["border"],
+            )
+        if self.status_textbox:
+            self.status_textbox.configure(
+                background=tokens["card"],
+                foreground=tokens["muted"],
+                insertbackground=tokens["text"],
+                selectbackground=tokens["selection_bg"],
+            )
+        if self.auto_fetch_label:
+            self.auto_fetch_label.configure(text_color=tokens["muted"])
+        if self.auto_fetch_menu:
+            self.auto_fetch_menu.configure(
+                fg_color=tokens["control_bg"],
+                button_color=tokens["control_bg"],
+                button_hover_color=tokens["control_hover"],
+                text_color=tokens["control_fg"],
+            )
+
+        for button in (
+            self.copy_status_button,
+            self.export_button,
+            self.import_button,
+            self.manual_button,
+            self.show_archived_button,
+            self.check_update_button,
+            self.update_button,
+            self.theme_button,
+        ):
+            if button:
+                button.configure(
+                    fg_color=tokens["control_bg"],
+                    hover_color=tokens["control_hover"],
+                    text_color=tokens["control_fg"],
+                )
+
+        self._update_header_sort_labels()
+        for tooltip in self._tooltips + self._row_tooltips:
+            tooltip.bg_color = tokens["card"]
+            tooltip.fg_color = tokens["text"]
+            tooltip.border_color = tokens["border"]
 
     def _build_header_cell(
         self,
@@ -681,6 +776,9 @@ class CodexMonitorApp:
             label.bind("<Button-1>", lambda event, sid=sort_id: self._on_header_click(sid))
             label.bind("<Enter>", lambda event, l=label: l.configure(text_color=tokens["control_bg"]))
             label.bind("<Leave>", lambda event, l=label: l.configure(text_color=tokens["header_fg"]))
+            self.header_labels[sort_id] = (label, text)
+        else:
+            self.header_labels[f"static-{column}"] = (label, text)
             
         label.grid(
             row=0,
@@ -707,7 +805,22 @@ class CodexMonitorApp:
             1000, lambda: self.state.save_sort_preference(self.sort_column, self.sort_asc)
         )
             
-        self.rebuild_ui()
+        self._update_header_sort_labels()
+        self.refresh_ui(skip_auto_fetch=True)
+
+    def _update_header_sort_labels(self) -> None:
+        tokens = self._theme_tokens()
+        for sort_id, (label, base_text) in self.header_labels.items():
+            display_text = base_text
+            if sort_id in ("email", "quota", "short_reset", "weekly_reset"):
+                if sort_id == self.sort_column:
+                    display_text += " ▲" if self.sort_asc else " ▼"
+                else:
+                    display_text += " ↕"
+                label.bind("<Enter>", lambda event, l=label: l.configure(text_color=tokens["control_bg"]))
+                label.bind("<Leave>", lambda event, l=label: l.configure(text_color=tokens["header_fg"]))
+
+            label.configure(text=display_text, text_color=tokens["header_fg"])
 
     def _build_value_label(
         self,
@@ -1001,7 +1114,20 @@ class CodexMonitorApp:
     def toggle_show_archived(self) -> None:
         self.show_archived = not self.show_archived
         self.state.save_show_archived_preference(self.show_archived)
-        self.rebuild_ui()
+        if self.show_archived_button:
+            self.show_archived_button.configure(
+                text=self._show_archived_icon(),
+                font=self._material_icon_font(18),
+            )
+            for tooltip in self._tooltips:
+                if tooltip.widget == self.show_archived_button:
+                    tooltip.text = (
+                        "Hide archived accounts"
+                        if self.show_archived
+                        else "Show archived accounts"
+                    )
+                    break
+        self.refresh_ui(skip_auto_fetch=True)
         self.status_var.set(
             "Showing archived accounts." if self.show_archived else "Hiding archived accounts."
         )
