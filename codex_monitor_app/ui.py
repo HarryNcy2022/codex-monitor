@@ -407,7 +407,7 @@ class CodexMonitorApp:
 
         self.log_toggle_button = self._create_labeled_icon_button(
             controls_frame,
-            icon=self._material_icon_text("history") or "≡",
+            icon=self._material_icon_text("visibility") or "●",
             label="Logs",
             command=self.toggle_logs,
             tooltip="Show logs",
@@ -436,7 +436,7 @@ class CodexMonitorApp:
 
         self.toggle_5h_columns_button = self._create_labeled_icon_button(
             controls_frame,
-            icon=self._material_icon_text("view_column") or "▥",
+            icon=self._material_icon_text("visibility_off") or "○",
             label="5h",
             command=self.toggle_5h_columns,
             tooltip="Hide 5h columns",
@@ -1224,7 +1224,7 @@ class CodexMonitorApp:
         if self.log_toggle_button:
             self._configure_labeled_icon_button(
                 self.log_toggle_button,
-                icon=self._material_icon_text("history") or "≡",
+                icon=self._material_icon_text("visibility") or "●",
                 label="Logs",
             )
             self._update_tooltip_text(self.log_toggle_button, "Show logs")
@@ -1265,7 +1265,7 @@ class CodexMonitorApp:
         if getattr(self, "show_5h_columns", True):
             self._configure_labeled_icon_button(
                 self.toggle_5h_columns_button,
-                icon=self._material_icon_text("view_column") or "▥",
+                icon=self._material_icon_text("visibility_off") or "○",
                 label="5h",
             )
             self._update_tooltip_text(self.toggle_5h_columns_button, "Hide 5h columns")
@@ -1273,7 +1273,7 @@ class CodexMonitorApp:
 
         self._configure_labeled_icon_button(
             self.toggle_5h_columns_button,
-            icon=self._material_icon_text("visibility_off") or "▥",
+            icon=self._material_icon_text("visibility") or "●",
             label="5h",
         )
         self._update_tooltip_text(self.toggle_5h_columns_button, "Show 5h columns")
