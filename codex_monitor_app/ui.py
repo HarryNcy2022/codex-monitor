@@ -18,6 +18,7 @@ from .config import (
     AUTH_DIR,
     AUTH_FILE_PATH,
     AUTO_FETCH_OPTIONS,
+    LOCAL_LOG_FILE,
     UPDATE_CHECK_INTERVAL_SECONDS,
     WINDOW_GEOMETRY,
     WINDOW_MIN_SIZE,
@@ -158,10 +159,14 @@ class CodexMonitorApp:
         self.copy_status_button: Optional[ctk.CTkButton] = None
         self.export_button: Optional[ctk.CTkButton] = None
         self.import_button: Optional[ctk.CTkButton] = None
-        self.show_archived_button: Optional[ctk.CTkButton] = None
+        self.show_archived_button: Optional[ctk.CTkFrame] = None
         self.auto_fetch_label: Optional[ctk.CTkLabel] = None
         self.auto_fetch_menu: Optional[ctk.CTkOptionMenu] = None
         self.status_textbox: Optional[tk.Text] = None
+        self.log_toggle_button: Optional[ctk.CTkFrame] = None
+        self.clear_logs_button: Optional[ctk.CTkButton] = None
+        self.toggle_5h_columns_button: Optional[ctk.CTkFrame] = None
+        self.log_textbox: Optional[tk.Text] = None
         self.check_update_button: Optional[ctk.CTkButton] = None
         self.update_button: Optional[ctk.CTkButton] = None
         self.theme_button: Optional[ctk.CTkButton] = None
@@ -185,8 +190,13 @@ class CodexMonitorApp:
         self._spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self._spinner_index = 0
         self.sort_column: Optional[str] = self.state.sort_column
+        if self.sort_column == "quota":
+            self.sort_column = "weekly_quota"
         self.sort_asc: bool = self.state.sort_asc
         self.show_archived: bool = self.state.show_archived
+        self.show_5h_columns = True
+        self.logs_expanded = False
+        self._last_logged_status: Optional[str] = None
 
         self.setup_ui()
         self.refresh_ui()
@@ -280,17 +290,7 @@ class CodexMonitorApp:
         )
         header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 3))
         self.header_frame = header_frame
-        self.header_labels = {}
-        self._configure_account_columns(header_frame)
-        header_frame.grid_columnconfigure(
-            5,
-            minsize=self._table_scrollbar_gutter_width(),
-        )
-        self._build_header_cell(header_frame, "Account Email", 0, "w", sort_id="email")
-        self._build_header_cell(header_frame, "Quota", 1, "w", sort_id="quota")
-        self._build_header_cell(header_frame, "5h Reset", 2, "w", sort_id="short_reset")
-        self._build_header_cell(header_frame, "Weekly Reset", 3, "w", sort_id="weekly_reset")
-        self._build_header_cell(header_frame, "Action", 4, "e")
+        self._build_account_headers()
 
         body_frame = ctk.CTkFrame(
             accounts_shell,
@@ -362,6 +362,7 @@ class CodexMonitorApp:
         )
         status_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         status_frame.grid_columnconfigure(0, weight=1)
+        status_frame.grid_columnconfigure(1, weight=0)
         self.status_frame = status_frame
 
         self.status_var = tk.StringVar(value=f"Watching: {AUTH_FILE_PATH} (watchdog)")
@@ -381,9 +382,13 @@ class CodexMonitorApp:
         )
         self.status_textbox.grid(row=0, column=0, sticky="ew", padx=(12, 0), pady=9)
 
+        controls_frame = ctk.CTkFrame(status_frame, fg_color="transparent")
+        controls_frame.grid(row=0, column=1, sticky="e", padx=(8, 10), pady=7)
+        self.status_controls_frame = controls_frame
+
         copy_text = self._material_icon_text("copy")
         self.copy_status_button = ctk.CTkButton(
-            status_frame,
+            controls_frame,
             text=copy_text or "⧉",
             command=self.copy_status_message,
             corner_radius=self.TOOLBAR_BUTTON_RADIUS,
@@ -396,13 +401,52 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.copy_status_button.grid(row=0, column=1, sticky="w", padx=(0, 10), pady=7)
+        self.copy_status_button.grid(row=0, column=0, sticky="e", padx=(0, 6), pady=0)
         self._force_square_button(self.copy_status_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.copy_status_button, "Copy status")
 
+        self.log_toggle_button = self._create_labeled_icon_button(
+            controls_frame,
+            icon=self._material_icon_text("history") or "≡",
+            label="Logs",
+            command=self.toggle_logs,
+            tooltip="Show logs",
+        )
+        self.log_toggle_button.grid(row=0, column=1, sticky="e", padx=(0, 6), pady=0)
+
+        clear_logs_text = self._material_icon_text("delete_sweep")
+        self.clear_logs_button = ctk.CTkButton(
+            controls_frame,
+            text=clear_logs_text or "×",
+            command=self.clear_logs,
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(18),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        self.clear_logs_button.grid(row=0, column=2, sticky="e", padx=(0, 10), pady=0)
+        self._force_square_button(self.clear_logs_button, self.TOOLBAR_BUTTON_SIZE)
+        self._attach_tooltip(self.clear_logs_button, "Clear logs")
+        self.clear_logs_button.grid_remove()
+
+        self.toggle_5h_columns_button = self._create_labeled_icon_button(
+            controls_frame,
+            icon=self._material_icon_text("view_column") or "▥",
+            label="5h",
+            command=self.toggle_5h_columns,
+            tooltip="Hide 5h columns",
+        )
+        self.toggle_5h_columns_button.grid(row=0, column=3, sticky="e", padx=(0, 10), pady=0)
+        self._update_5h_columns_button()
+
         export_text = self._material_icon_text("download")
         self.export_button = ctk.CTkButton(
-            status_frame,
+            controls_frame,
             text=export_text or "↓",
             command=self.export_data,
             corner_radius=self.TOOLBAR_BUTTON_RADIUS,
@@ -415,13 +459,13 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.export_button.grid(row=0, column=2, sticky="e", padx=(0, 6), pady=7)
+        self.export_button.grid(row=0, column=4, sticky="e", padx=(0, 6), pady=0)
         self._force_square_button(self.export_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.export_button, "Export data")
 
         import_text = self._material_icon_text("upload")
         self.import_button = ctk.CTkButton(
-            status_frame,
+            controls_frame,
             text=import_text or "↑",
             command=self.import_data,
             corner_radius=self.TOOLBAR_BUTTON_RADIUS,
@@ -434,20 +478,20 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.import_button.grid(row=0, column=3, sticky="e", padx=(0, 10), pady=7)
+        self.import_button.grid(row=0, column=5, sticky="e", padx=(0, 10), pady=0)
         self._force_square_button(self.import_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.import_button, "Import data")
 
         self.auto_fetch_label = ctk.CTkLabel(
-            status_frame,
+            controls_frame,
             text="Auto Fetch",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=tokens["muted"],
         )
-        self.auto_fetch_label.grid(row=0, column=4, sticky="e", padx=(0, 5), pady=7)
+        self.auto_fetch_label.grid(row=0, column=6, sticky="e", padx=(0, 5), pady=0)
 
         self.auto_fetch_menu = ctk.CTkOptionMenu(
-            status_frame,
+            controls_frame,
             values=AUTO_FETCH_OPTIONS,
             command=self.save_current_auto_fetch_value,
             width=88,
@@ -462,11 +506,11 @@ class CodexMonitorApp:
             text_color=tokens["control_fg"],
             anchor="w",
         )
-        self.auto_fetch_menu.grid(row=0, column=5, sticky="e", padx=(0, 6), pady=7)
+        self.auto_fetch_menu.grid(row=0, column=7, sticky="e", padx=(0, 6), pady=0)
 
         refresh_text = self._material_icon_text("refresh")
         self.manual_button = ctk.CTkButton(
-            status_frame,
+            controls_frame,
             text=refresh_text or "⟳",
             command=self.manual_fetch,
             corner_radius=self.TOOLBAR_BUTTON_RADIUS,
@@ -479,34 +523,22 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.manual_button.grid(row=0, column=6, sticky="e", padx=(0, 6), pady=7)
+        self.manual_button.grid(row=0, column=8, sticky="e", padx=(0, 6), pady=0)
         self._force_square_button(self.manual_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.manual_button, "Fetch quota")
 
-        self.show_archived_button = ctk.CTkButton(
-            status_frame,
-            text=self._show_archived_icon(),
+        self.show_archived_button = self._create_labeled_icon_button(
+            controls_frame,
+            icon=self._show_archived_icon(),
+            label="Arch",
             command=self.toggle_show_archived,
-            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
-            height=self.TOOLBAR_BUTTON_SIZE,
-            width=self.TOOLBAR_BUTTON_SIZE,
-            border_spacing=0,
-            anchor="center",
-            font=self._material_icon_font(18),
-            fg_color=tokens["control_bg"],
-            hover_color=tokens["control_hover"],
-            text_color=tokens["control_fg"],
+            tooltip="Hide archived accounts" if self.show_archived else "Show archived accounts",
         )
-        self.show_archived_button.grid(row=0, column=7, sticky="e", padx=(0, 6), pady=7)
-        self._force_square_button(self.show_archived_button, self.TOOLBAR_BUTTON_SIZE)
-        self._attach_tooltip(
-            self.show_archived_button,
-            "Hide archived accounts" if self.show_archived else "Show archived accounts",
-        )
+        self.show_archived_button.grid(row=0, column=9, sticky="e", padx=(0, 6), pady=0)
 
         check_update_text = self._material_icon_text("update")
         self.check_update_button = ctk.CTkButton(
-            status_frame,
+            controls_frame,
             text=check_update_text or "↻",
             command=self.check_for_updates_manually,
             corner_radius=self.TOOLBAR_BUTTON_RADIUS,
@@ -519,12 +551,12 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.check_update_button.grid(row=0, column=8, sticky="e", padx=(0, 6), pady=7)
+        self.check_update_button.grid(row=0, column=10, sticky="e", padx=(0, 6), pady=0)
         self._force_square_button(self.check_update_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.check_update_button, "Check for updates")
 
         self.update_button = ctk.CTkButton(
-            status_frame,
+            controls_frame,
             text="Update",
             command=self.update_application,
             corner_radius=self.TOOLBAR_BUTTON_RADIUS,
@@ -537,11 +569,11 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.update_button.grid(row=0, column=9, sticky="e", padx=(0, 6), pady=7)
+        self.update_button.grid(row=0, column=11, sticky="e", padx=(0, 6), pady=0)
 
         theme_text = self._appearance_toggle_icon()
         self.theme_button = ctk.CTkButton(
-            status_frame,
+            controls_frame,
             text=theme_text,
             command=self.toggle_appearance_mode,
             corner_radius=self.TOOLBAR_BUTTON_RADIUS,
@@ -554,19 +586,85 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.theme_button.grid(row=0, column=10, sticky="e", padx=(0, 10), pady=7)
+        self.theme_button.grid(row=0, column=12, sticky="e", padx=(0, 0), pady=0)
         self._force_square_button(self.theme_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.theme_button, "Toggle theme")
+
+        self.log_textbox = tk.Text(
+            status_frame,
+            height=6,
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=tokens["border"],
+            highlightcolor=tokens["border"],
+            relief="flat",
+            background=tokens["table_shell"],
+            foreground=tokens["muted"],
+            insertbackground=tokens["text"],
+            selectbackground=tokens["selection_bg"],
+            font=("TkDefaultFont", 10),
+        )
+        self.log_textbox.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 10))
+        self.log_textbox.grid_remove()
 
         self._sync_status_textbox()
         self._update_manual_button_state()
 
+    def _account_column_layout(self) -> Dict[str, int]:
+        if getattr(self, "show_5h_columns", True):
+            return {
+                "email": 0,
+                "short_quota": 1,
+                "short_reset": 2,
+                "weekly_quota": 3,
+                "weekly_reset": 4,
+                "action": 5,
+                "gutter": 6,
+            }
+
+        return {
+            "email": 0,
+            "weekly_quota": 1,
+            "weekly_reset": 2,
+            "action": 3,
+            "gutter": 4,
+        }
+
     def _configure_account_columns(self, frame: ctk.CTkFrame) -> None:
-        frame.grid_columnconfigure(0, weight=5, uniform="account-cols")
-        frame.grid_columnconfigure(1, weight=2, uniform="account-cols")
-        frame.grid_columnconfigure(2, weight=4, uniform="account-cols")
-        frame.grid_columnconfigure(3, weight=4, uniform="account-cols")
-        frame.grid_columnconfigure(4, weight=2, uniform="account-cols", minsize=92)
+        for column in range(7):
+            frame.grid_columnconfigure(column, weight=0, uniform="", minsize=0)
+
+        columns = self._account_column_layout()
+        frame.grid_columnconfigure(columns["email"], weight=5, uniform="account-cols")
+        if getattr(self, "show_5h_columns", True):
+            frame.grid_columnconfigure(columns["short_quota"], weight=1, uniform="account-cols", minsize=56)
+            frame.grid_columnconfigure(columns["short_reset"], weight=4, uniform="account-cols")
+        frame.grid_columnconfigure(columns["weekly_quota"], weight=1, uniform="account-cols", minsize=62)
+        frame.grid_columnconfigure(columns["weekly_reset"], weight=4, uniform="account-cols")
+        frame.grid_columnconfigure(columns["action"], weight=2, uniform="account-cols", minsize=92)
+
+    def _build_account_headers(self) -> None:
+        if not self.header_frame:
+            return
+
+        for widget in self.header_frame.winfo_children():
+            widget.destroy()
+
+        self.header_labels = {}
+        self._configure_account_columns(self.header_frame)
+        columns = self._account_column_layout()
+        self.header_frame.grid_columnconfigure(
+            columns["gutter"],
+            minsize=self._table_scrollbar_gutter_width(),
+        )
+        self._build_header_cell(self.header_frame, "Account Email", columns["email"], "w", sort_id="email")
+        if getattr(self, "show_5h_columns", True):
+            self._build_header_cell(self.header_frame, "5h\nQuota", columns["short_quota"], "w", sort_id="short_quota")
+            self._build_header_cell(self.header_frame, "5h Reset", columns["short_reset"], "w", sort_id="short_reset")
+        self._build_header_cell(self.header_frame, "Weekly\nQuota", columns["weekly_quota"], "w", sort_id="weekly_quota")
+        self._build_header_cell(self.header_frame, "Weekly Reset", columns["weekly_reset"], "w", sort_id="weekly_reset")
+        self._build_header_cell(self.header_frame, "Action", columns["action"], "e")
 
     def _table_scrollbar_gutter_width(self) -> int:
         return self.TABLE_SCROLLBAR_WIDTH + self.TABLE_SCROLLBAR_PAD_X
@@ -582,10 +680,13 @@ class CodexMonitorApp:
             "unarchive": "e169",
             "visibility": "e8f4",
             "visibility_off": "e8f5",
+            "history": "e889",
+            "view_column": "e8ec",
             "light_mode": "e518",
             "dark_mode": "e51c",
             "upload": "f09b",
             "sync": "e863",
+            "delete_sweep": "e16c",
         }
         if not self._material_symbols_available:
             return ""
@@ -610,6 +711,102 @@ class CodexMonitorApp:
             self._row_tooltips.append(tooltip)
         else:
             self._tooltips.append(tooltip)
+
+    def _create_labeled_icon_button(
+        self,
+        parent: tk.Misc,
+        *,
+        icon: str,
+        label: str,
+        command,
+        tooltip: str,
+    ) -> ctk.CTkFrame:
+        tokens = self._theme_tokens()
+        button = ctk.CTkFrame(
+            parent,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            fg_color=tokens["control_bg"],
+        )
+        button.grid_propagate(False)
+        button.pack_propagate(False)
+        button._icon_label = tk.Label(
+            button,
+            text=icon,
+            borderwidth=0,
+            highlightthickness=0,
+            padx=0,
+            pady=0,
+            background=tokens["control_bg"],
+            foreground=tokens["control_fg"],
+            font=(MATERIAL_SYMBOLS_FAMILY, 16) if self._material_symbols_available else ("TkDefaultFont", 12, "bold"),
+        )
+        button._icon_label.place(relx=0.5, y=10, anchor="n")
+        button._text_label = tk.Label(
+            button,
+            text=label,
+            borderwidth=0,
+            highlightthickness=0,
+            padx=0,
+            pady=0,
+            background=tokens["control_bg"],
+            foreground=tokens["control_fg"],
+            font=("TkDefaultFont", 6, "bold"),
+        )
+        button._text_label.place(relx=0.5, y=2, anchor="n")
+
+        def apply_color(color: str) -> None:
+            button.configure(fg_color=color)
+            button._icon_label.configure(background=color)
+            button._text_label.configure(background=color)
+
+        def on_enter(_event: tk.Event) -> None:
+            apply_color(self._theme_tokens()["control_hover"])
+
+        def on_leave(_event: tk.Event) -> None:
+            apply_color(self._theme_tokens()["control_bg"])
+
+        def on_click(_event: tk.Event) -> str:
+            command()
+            return "break"
+
+        for widget in (button, button._icon_label, button._text_label):
+            widget.bind("<Enter>", on_enter, add="+")
+            widget.bind("<Leave>", on_leave, add="+")
+            widget.bind("<Button-1>", on_click, add="+")
+
+        self._attach_tooltip(button, tooltip)
+        return button
+
+    def _configure_labeled_icon_button(
+        self,
+        button: Optional[ctk.CTkFrame],
+        *,
+        icon: Optional[str] = None,
+        label: Optional[str] = None,
+    ) -> None:
+        if not button:
+            return
+
+        tokens = self._theme_tokens()
+        button.configure(fg_color=tokens["control_bg"])
+        icon_label = getattr(button, "_icon_label", None)
+        if icon_label is not None:
+            if icon is not None:
+                icon_label.configure(text=icon)
+            icon_label.configure(
+                background=tokens["control_bg"],
+                foreground=tokens["control_fg"],
+            )
+        text_label = getattr(button, "_text_label", None)
+        if text_label is not None:
+            if label is not None:
+                text_label.configure(text=label)
+            text_label.configure(
+                background=tokens["control_bg"],
+                foreground=tokens["control_fg"],
+            )
 
     def _center_icon_button(self, button: ctk.CTkButton) -> None:
         image_label = getattr(button, "_image_label", None)
@@ -644,6 +841,10 @@ class CodexMonitorApp:
         self.auto_fetch_label = None
         self.auto_fetch_menu = None
         self.status_textbox = None
+        self.log_toggle_button = None
+        self.clear_logs_button = None
+        self.toggle_5h_columns_button = None
+        self.log_textbox = None
         self.update_button = None
         self.theme_button = None
         self.header_frame = None
@@ -714,6 +915,15 @@ class CodexMonitorApp:
                 insertbackground=tokens["text"],
                 selectbackground=tokens["selection_bg"],
             )
+        if self.log_textbox:
+            self.log_textbox.configure(
+                background=tokens["table_shell"],
+                foreground=tokens["muted"],
+                insertbackground=tokens["text"],
+                selectbackground=tokens["selection_bg"],
+                highlightbackground=tokens["border"],
+                highlightcolor=tokens["border"],
+            )
         if self.auto_fetch_label:
             self.auto_fetch_label.configure(text_color=tokens["muted"])
         if self.auto_fetch_menu:
@@ -726,10 +936,10 @@ class CodexMonitorApp:
 
         for button in (
             self.copy_status_button,
+            self.clear_logs_button,
             self.export_button,
             self.import_button,
             self.manual_button,
-            self.show_archived_button,
             self.check_update_button,
             self.update_button,
             self.theme_button,
@@ -741,6 +951,9 @@ class CodexMonitorApp:
                     text_color=tokens["control_fg"],
                 )
 
+        self._configure_labeled_icon_button(self.log_toggle_button)
+        self._configure_labeled_icon_button(self.toggle_5h_columns_button)
+        self._configure_labeled_icon_button(self.show_archived_button)
         self._update_header_sort_labels()
         for tooltip in self._tooltips + self._row_tooltips:
             tooltip.bg_color = tokens["card"]
@@ -812,7 +1025,7 @@ class CodexMonitorApp:
         tokens = self._theme_tokens()
         for sort_id, (label, base_text) in self.header_labels.items():
             display_text = base_text
-            if sort_id in ("email", "quota", "short_reset", "weekly_reset"):
+            if sort_id in ("email", "quota", "weekly_quota", "short_quota", "short_reset", "weekly_reset"):
                 if sort_id == self.sort_column:
                     display_text += " ▲" if self.sort_asc else " ▼"
                 else:
@@ -942,10 +1155,133 @@ class CodexMonitorApp:
             return
 
         message = self.status_var.get()
+        display_message = self._timestamped_log_line(message) if message else ""
         self.status_textbox.configure(state="normal")
         self.status_textbox.delete("1.0", "end")
-        self.status_textbox.insert("1.0", message)
+        self.status_textbox.insert("1.0", display_message)
         self.status_textbox.configure(state="disabled")
+        self._append_log_message(message)
+
+    def _timestamped_log_line(self, message: str) -> str:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return f"[{timestamp}] {message}"
+
+    def _append_log_message(self, message: str) -> None:
+        if not message or message == self._last_logged_status:
+            return
+
+        self._last_logged_status = message
+        line = self._timestamped_log_line(message)
+        try:
+            with open(LOCAL_LOG_FILE, "a", encoding="utf-8") as file:
+                file.write(f"{line}\n")
+        except OSError:
+            return
+
+        if self.logs_expanded:
+            self._refresh_log_textbox()
+
+    def _read_log_text(self) -> str:
+        try:
+            with open(LOCAL_LOG_FILE, "r", encoding="utf-8") as file:
+                return file.read().rstrip()
+        except OSError:
+            return ""
+
+    def _refresh_log_textbox(self) -> None:
+        if not self.log_textbox:
+            return
+
+        log_text = self._read_log_text() or "No logs yet."
+        self.log_textbox.configure(state="normal")
+        self.log_textbox.delete("1.0", "end")
+        self.log_textbox.insert("1.0", log_text)
+        self.log_textbox.see("end")
+        self.log_textbox.configure(state="disabled")
+
+    def toggle_logs(self) -> None:
+        self.logs_expanded = not self.logs_expanded
+        if not self.log_textbox:
+            return
+
+        if self.logs_expanded:
+            self._refresh_log_textbox()
+            self.log_textbox.grid()
+            if self.clear_logs_button:
+                self.clear_logs_button.grid()
+            if self.log_toggle_button:
+                self._configure_labeled_icon_button(
+                    self.log_toggle_button,
+                    icon=self._material_icon_text("visibility_off") or "-",
+                    label="Logs",
+                )
+                self._update_tooltip_text(self.log_toggle_button, "Hide logs")
+            return
+
+        self.log_textbox.grid_remove()
+        if self.clear_logs_button:
+            self.clear_logs_button.grid_remove()
+        if self.log_toggle_button:
+            self._configure_labeled_icon_button(
+                self.log_toggle_button,
+                icon=self._material_icon_text("history") or "≡",
+                label="Logs",
+            )
+            self._update_tooltip_text(self.log_toggle_button, "Show logs")
+
+    def clear_logs(self) -> None:
+        try:
+            with open(LOCAL_LOG_FILE, "w", encoding="utf-8"):
+                pass
+        except OSError as error:
+            self.status_var.set(f"Clear logs failed: {error}")
+            return
+
+        self._last_logged_status = "Logs cleared."
+        self._refresh_log_textbox()
+        self.status_var.set("Logs cleared.")
+
+    def toggle_5h_columns(self) -> None:
+        self.show_5h_columns = not getattr(self, "show_5h_columns", True)
+        if self.sort_column in ("short_quota", "short_reset") and not self.show_5h_columns:
+            self.sort_column = "weekly_quota"
+            self.sort_asc = True
+            if self._sort_save_timer:
+                self.root.after_cancel(self._sort_save_timer)
+            self._sort_save_timer = self.root.after(
+                1000,
+                lambda: self.state.save_sort_preference(self.sort_column, self.sort_asc),
+            )
+
+        self._build_account_headers()
+        if self.toggle_5h_columns_button:
+            self._update_5h_columns_button()
+        self.refresh_ui(skip_auto_fetch=True)
+
+    def _update_5h_columns_button(self) -> None:
+        if not self.toggle_5h_columns_button:
+            return
+
+        if getattr(self, "show_5h_columns", True):
+            self._configure_labeled_icon_button(
+                self.toggle_5h_columns_button,
+                icon=self._material_icon_text("view_column") or "▥",
+                label="5h",
+            )
+            self._update_tooltip_text(self.toggle_5h_columns_button, "Hide 5h columns")
+            return
+
+        self._configure_labeled_icon_button(
+            self.toggle_5h_columns_button,
+            icon=self._material_icon_text("visibility_off") or "▥",
+            label="5h",
+        )
+        self._update_tooltip_text(self.toggle_5h_columns_button, "Show 5h columns")
+
+    def _update_tooltip_text(self, widget: tk.Misc, text: str) -> None:
+        for tooltip in self._tooltips + self._row_tooltips:
+            if tooltip.widget == widget:
+                tooltip.text = text
 
     def copy_status_message(self) -> None:
         message = self.status_var.get() if hasattr(self, "status_var") else ""
@@ -1115,9 +1451,10 @@ class CodexMonitorApp:
         self.show_archived = not self.show_archived
         self.state.save_show_archived_preference(self.show_archived)
         if self.show_archived_button:
-            self.show_archived_button.configure(
-                text=self._show_archived_icon(),
-                font=self._material_icon_font(18),
+            self._configure_labeled_icon_button(
+                self.show_archived_button,
+                icon=self._show_archived_icon(),
+                label="Arch",
             )
             for tooltip in self._tooltips:
                 if tooltip.widget == self.show_archived_button:
@@ -1196,10 +1533,10 @@ class CodexMonitorApp:
         )
         if show_button:
             self.update_button.grid()
-            self.theme_button.grid_configure(column=10)
+            self.theme_button.grid_configure(column=12)
         else:
             self.update_button.grid_remove()
-            self.theme_button.grid_configure(column=9)
+            self.theme_button.grid_configure(column=11)
 
     def _animate_spinner(self) -> None:
         if not self.manual_button or self._pending_fetches == 0:
@@ -1301,11 +1638,11 @@ class CodexMonitorApp:
             self._force_square_button(self.theme_button, self.TOOLBAR_BUTTON_SIZE)
 
         if self.show_archived_button:
-            self.show_archived_button.configure(
-                text=self._show_archived_icon(),
-                font=self._material_icon_font(18),
+            self._configure_labeled_icon_button(
+                self.show_archived_button,
+                icon=self._show_archived_icon(),
+                label="Arch",
             )
-            self._force_square_button(self.show_archived_button, self.TOOLBAR_BUTTON_SIZE)
 
     def _begin_fetch(self, status_message: str) -> None:
         self._pending_fetches += 1
@@ -1336,7 +1673,8 @@ class CodexMonitorApp:
     def _build_account_row(
         self,
         email: str,
-        quota_left: str,
+        weekly_quota_left: str,
+        short_quota_left: str,
         short_reset_display: str,
         weekly_reset_display: str,
         is_current: bool,
@@ -1374,11 +1712,12 @@ class CodexMonitorApp:
             pady=self.TABLE_ROW_GAP_Y,
         )
         self._configure_account_columns(row)
+        columns = self._account_column_layout()
 
         email_cell = ctk.CTkFrame(row, fg_color="transparent")
         email_cell.grid(
             row=0,
-            column=0,
+            column=columns["email"],
             sticky="ew",
             padx=10,
             pady=self.TABLE_ROW_PAD_Y,
@@ -1412,33 +1751,42 @@ class CodexMonitorApp:
         self._force_square_button(copy_button, self.ROW_BUTTON_SIZE)
         self._attach_tooltip(copy_button, "Copy email", row_tooltip=True)
 
+        if getattr(self, "show_5h_columns", True):
+            self._build_value_label(
+                row,
+                short_quota_left,
+                row_text,
+                columns["short_quota"],
+                anchor="w",
+                bold=is_current,
+            )
+            self._build_value_label(
+                row,
+                short_reset_display,
+                row_text,
+                columns["short_reset"],
+                anchor="w",
+            )
         self._build_value_label(
             row,
-            quota_left,
+            weekly_quota_left,
             row_text,
-            1,
+            columns["weekly_quota"],
             anchor="w",
             bold=is_current,
         )
         self._build_value_label(
             row,
-            short_reset_display,
-            row_text,
-            2,
-            anchor="w",
-        )
-        self._build_value_label(
-            row,
             weekly_reset_display,
             row_text,
-            3,
+            columns["weekly_reset"],
             anchor="w",
         )
 
         actions_cell = ctk.CTkFrame(row, fg_color="transparent")
         actions_cell.grid(
             row=0,
-            column=4,
+            column=columns["action"],
             sticky="e",
             padx=10,
             pady=self.TABLE_ROW_PAD_Y,
@@ -2065,9 +2413,12 @@ class CodexMonitorApp:
         email, data = item
         if self.sort_column == "email":
             return email.lower()
-        if self.sort_column == "quota":
+        if self.sort_column in ("quota", "weekly_quota"):
             value = self._window_used_percent(data, "weekly_window")
             return value if value is not None else data.get("used_percent", 0)
+        if self.sort_column == "short_quota":
+            value = self._window_used_percent(data, "short_window")
+            return value if value is not None else 0
         if self.sort_column == "short_reset":
             return self._window_reset_ts(data, "short_window") or 0
         if self.sort_column == "weekly_reset":
@@ -2126,21 +2477,32 @@ class CodexMonitorApp:
                     )
                     if weekly_used_percent is None:
                         weekly_used_percent = data.get("used_percent", 0)
+                    short_used_percent = self._window_used_percent(
+                        data,
+                        "short_window",
+                    )
                     is_current = email == self.state.current_account_email
                     is_archived = self._is_archived_account(data)
                     short_reset_display = format_reset_display(short_reset_ts, now_ts)
                     weekly_reset_display = format_reset_display(weekly_reset_ts, now_ts)
-                    quota_left = format_quota_left(weekly_used_percent)
+                    weekly_quota_left = format_quota_left(weekly_used_percent)
+                    short_quota_left = (
+                        format_quota_left(short_used_percent)
+                        if short_used_percent is not None
+                        else "-"
+                    )
                 except Exception:
                     short_reset_display = "Error"
                     weekly_reset_display = "Error"
-                    quota_left = "Error"
+                    weekly_quota_left = "Error"
+                    short_quota_left = "Error"
                     is_current = email == self.state.current_account_email
                     is_archived = self._is_archived_account(data)
 
                 self._build_account_row(
                     email=email,
-                    quota_left=quota_left,
+                    weekly_quota_left=weekly_quota_left,
+                    short_quota_left=short_quota_left,
                     short_reset_display=short_reset_display,
                     weekly_reset_display=weekly_reset_display,
                     is_current=is_current,
