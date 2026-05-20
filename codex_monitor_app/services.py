@@ -20,6 +20,11 @@ class MonitorStateService:
         sort_asc_raw = self.storage.get_meta_value("sort_asc")
         self.sort_asc: bool = True if sort_asc_raw is None else bool(sort_asc_raw)
         self.show_archived: bool = bool(self.storage.get_meta_value("show_archived"))
+        show_5h_columns_raw = self.storage.get_meta_value("show_5h_columns")
+        self.show_5h_columns: bool = (
+            True if show_5h_columns_raw is None else bool(show_5h_columns_raw)
+        )
+        self.logs_expanded: bool = bool(self.storage.get_meta_value("logs_expanded"))
 
     def save_sort_preference(self, column: Optional[str], asc: bool) -> None:
         self.sort_column = column
@@ -31,6 +36,16 @@ class MonitorStateService:
     def save_show_archived_preference(self, show_archived: bool) -> None:
         self.show_archived = show_archived
         self.storage.set_meta_value("show_archived", show_archived)
+        self.save_data()
+
+    def save_show_5h_columns_preference(self, show_5h_columns: bool) -> None:
+        self.show_5h_columns = show_5h_columns
+        self.storage.set_meta_value("show_5h_columns", show_5h_columns)
+        self.save_data()
+
+    def save_logs_expanded_preference(self, logs_expanded: bool) -> None:
+        self.logs_expanded = logs_expanded
+        self.storage.set_meta_value("logs_expanded", logs_expanded)
         self.save_data()
 
     def save_data(self) -> None:
@@ -114,6 +129,11 @@ class MonitorStateService:
         self.current_account_email = self._restore_current_account_email()
         self.auto_fetch_interval = self._restore_auto_fetch_value()
         self.show_archived = bool(self.storage.get_meta_value("show_archived"))
+        show_5h_columns_raw = self.storage.get_meta_value("show_5h_columns")
+        self.show_5h_columns = (
+            True if show_5h_columns_raw is None else bool(show_5h_columns_raw)
+        )
+        self.logs_expanded = bool(self.storage.get_meta_value("logs_expanded"))
         self.session_tokens.clear()
         self.latest_auth_jwt = None
 

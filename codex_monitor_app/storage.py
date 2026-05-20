@@ -208,6 +208,12 @@ class UsageStorage:
         if "show_archived" in meta:
             sanitized["show_archived"] = bool(meta.get("show_archived"))
 
+        if "show_5h_columns" in meta:
+            sanitized["show_5h_columns"] = bool(meta.get("show_5h_columns"))
+
+        if "logs_expanded" in meta:
+            sanitized["logs_expanded"] = bool(meta.get("logs_expanded"))
+
         return sanitized
 
     def _sanitize_account_data(self, account_data: dict) -> AccountUsage:

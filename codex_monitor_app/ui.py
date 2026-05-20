@@ -194,8 +194,8 @@ class CodexMonitorApp:
             self.sort_column = "weekly_quota"
         self.sort_asc: bool = self.state.sort_asc
         self.show_archived: bool = self.state.show_archived
-        self.show_5h_columns = True
-        self.logs_expanded = False
+        self.show_5h_columns: bool = self.state.show_5h_columns
+        self.logs_expanded: bool = self.state.logs_expanded
         self._last_logged_status: Optional[str] = None
 
         self.setup_ui()
@@ -609,6 +609,7 @@ class CodexMonitorApp:
         self.log_textbox.grid_remove()
 
         self._sync_status_textbox()
+        self._sync_logs_visibility()
         self._update_manual_button_state()
 
     def _account_column_layout(self) -> Dict[str, int]:
@@ -828,6 +829,20 @@ class CodexMonitorApp:
         if self.show_archived:
             return self._material_icon_text("visibility_off") or "○"
         return self._material_icon_text("visibility") or "●"
+
+    def _update_show_archived_button(self) -> None:
+        if not self.show_archived_button:
+            return
+
+        self._configure_labeled_icon_button(
+            self.show_archived_button,
+            icon=self._show_archived_icon(),
+            label="Arch",
+        )
+        self._update_tooltip_text(
+            self.show_archived_button,
+            "Hide archived accounts" if self.show_archived else "Show archived accounts",
+        )
 
     def rebuild_ui(self) -> None:
         status_message = self.status_var.get() if hasattr(self, "status_var") else ""
@@ -1201,6 +1216,10 @@ class CodexMonitorApp:
 
     def toggle_logs(self) -> None:
         self.logs_expanded = not self.logs_expanded
+        self.state.save_logs_expanded_preference(self.logs_expanded)
+        self._sync_logs_visibility()
+
+    def _sync_logs_visibility(self) -> None:
         if not self.log_textbox:
             return
 
@@ -1243,6 +1262,7 @@ class CodexMonitorApp:
 
     def toggle_5h_columns(self) -> None:
         self.show_5h_columns = not getattr(self, "show_5h_columns", True)
+        self.state.save_show_5h_columns_preference(self.show_5h_columns)
         if self.sort_column in ("short_quota", "short_reset") and not self.show_5h_columns:
             self.sort_column = "weekly_quota"
             self.sort_asc = True
@@ -1450,20 +1470,7 @@ class CodexMonitorApp:
     def toggle_show_archived(self) -> None:
         self.show_archived = not self.show_archived
         self.state.save_show_archived_preference(self.show_archived)
-        if self.show_archived_button:
-            self._configure_labeled_icon_button(
-                self.show_archived_button,
-                icon=self._show_archived_icon(),
-                label="Arch",
-            )
-            for tooltip in self._tooltips:
-                if tooltip.widget == self.show_archived_button:
-                    tooltip.text = (
-                        "Hide archived accounts"
-                        if self.show_archived
-                        else "Show archived accounts"
-                    )
-                    break
+        self._update_show_archived_button()
         self.refresh_ui(skip_auto_fetch=True)
         self.status_var.set(
             "Showing archived accounts." if self.show_archived else "Hiding archived accounts."
@@ -1507,6 +1514,13 @@ class CodexMonitorApp:
             with open(path, "r", encoding="utf-8") as file:
                 payload = json.load(file)
             self.state.import_data(payload)
+            self.show_archived = self.state.show_archived
+            self.show_5h_columns = self.state.show_5h_columns
+            self.logs_expanded = self.state.logs_expanded
+            self._build_account_headers()
+            self._update_show_archived_button()
+            self._update_5h_columns_button()
+            self._sync_logs_visibility()
             self.refresh_ui(skip_auto_fetch=True)
             self._update_manual_button_state()
             self.status_var.set(f"Imported accounts and config from {path}.")
@@ -1637,12 +1651,7 @@ class CodexMonitorApp:
             )
             self._force_square_button(self.theme_button, self.TOOLBAR_BUTTON_SIZE)
 
-        if self.show_archived_button:
-            self._configure_labeled_icon_button(
-                self.show_archived_button,
-                icon=self._show_archived_icon(),
-                label="Arch",
-            )
+        self._update_show_archived_button()
 
     def _begin_fetch(self, status_message: str) -> None:
         self._pending_fetches += 1
