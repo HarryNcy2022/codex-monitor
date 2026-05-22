@@ -165,7 +165,6 @@ class CodexMonitorApp:
         self.status_textbox: Optional[tk.Text] = None
         self.log_toggle_button: Optional[ctk.CTkFrame] = None
         self.clear_logs_button: Optional[ctk.CTkButton] = None
-        self.toggle_5h_columns_button: Optional[ctk.CTkFrame] = None
         self.log_textbox: Optional[tk.Text] = None
         self.check_update_button: Optional[ctk.CTkButton] = None
         self.update_button: Optional[ctk.CTkButton] = None
@@ -189,12 +188,9 @@ class CodexMonitorApp:
         self._spinner_timer_id: Optional[str] = None
         self._spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self._spinner_index = 0
-        self.sort_column: Optional[str] = self.state.sort_column
-        if self.sort_column == "quota":
-            self.sort_column = "weekly_quota"
+        self.sort_column: Optional[str] = self._normalized_sort_column(self.state.sort_column)
         self.sort_asc: bool = self.state.sort_asc
         self.show_archived: bool = self.state.show_archived
-        self.show_5h_columns: bool = self.state.show_5h_columns
         self.logs_expanded: bool = self.state.logs_expanded
         self._last_logged_status: Optional[str] = None
 
@@ -206,6 +202,13 @@ class CodexMonitorApp:
         self.root.after(0, self.initial_fetch_on_startup)
         self.root.after(1200, self.check_for_updates_silently)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def _normalized_sort_column(self, sort_column: Optional[str]) -> Optional[str]:
+        if sort_column in ("quota", "short_quota"):
+            return "weekly_quota"
+        if sort_column == "short_reset":
+            return "weekly_reset"
+        return sort_column
 
     def _theme_tokens(self) -> Dict[str, str]:
         if ctk.get_appearance_mode().lower() == "dark":
@@ -434,16 +437,6 @@ class CodexMonitorApp:
         self._attach_tooltip(self.clear_logs_button, "Clear logs")
         self.clear_logs_button.grid_remove()
 
-        self.toggle_5h_columns_button = self._create_labeled_icon_button(
-            controls_frame,
-            icon=self._material_icon_text("visibility_off") or "○",
-            label="5h",
-            command=self.toggle_5h_columns,
-            tooltip="Hide 5h columns",
-        )
-        self.toggle_5h_columns_button.grid(row=0, column=3, sticky="e", padx=(0, 10), pady=0)
-        self._update_5h_columns_button()
-
         export_text = self._material_icon_text("download")
         self.export_button = ctk.CTkButton(
             controls_frame,
@@ -613,21 +606,10 @@ class CodexMonitorApp:
         self._update_manual_button_state()
 
     def _account_column_layout(self) -> Dict[str, int]:
-        if getattr(self, "show_5h_columns", True):
-            return {
-                "email": 0,
-                "short_quota": 1,
-                "short_reset": 2,
-                "weekly_quota": 3,
-                "weekly_reset": 4,
-                "action": 5,
-                "gutter": 6,
-            }
-
         return {
             "email": 0,
-            "weekly_quota": 1,
-            "weekly_reset": 2,
+            "quota": 1,
+            "reset": 2,
             "action": 3,
             "gutter": 4,
         }
@@ -638,11 +620,8 @@ class CodexMonitorApp:
 
         columns = self._account_column_layout()
         frame.grid_columnconfigure(columns["email"], weight=5, uniform="account-cols")
-        if getattr(self, "show_5h_columns", True):
-            frame.grid_columnconfigure(columns["short_quota"], weight=1, uniform="account-cols", minsize=56)
-            frame.grid_columnconfigure(columns["short_reset"], weight=4, uniform="account-cols")
-        frame.grid_columnconfigure(columns["weekly_quota"], weight=1, uniform="account-cols", minsize=62)
-        frame.grid_columnconfigure(columns["weekly_reset"], weight=4, uniform="account-cols")
+        frame.grid_columnconfigure(columns["quota"], weight=2, uniform="account-cols", minsize=92)
+        frame.grid_columnconfigure(columns["reset"], weight=5, uniform="account-cols")
         frame.grid_columnconfigure(columns["action"], weight=2, uniform="account-cols", minsize=92)
 
     def _build_account_headers(self) -> None:
@@ -660,11 +639,8 @@ class CodexMonitorApp:
             minsize=self._table_scrollbar_gutter_width(),
         )
         self._build_header_cell(self.header_frame, "Account Email", columns["email"], "w", sort_id="email")
-        if getattr(self, "show_5h_columns", True):
-            self._build_header_cell(self.header_frame, "5h\nQuota", columns["short_quota"], "w", sort_id="short_quota")
-            self._build_header_cell(self.header_frame, "5h Reset", columns["short_reset"], "w", sort_id="short_reset")
-        self._build_header_cell(self.header_frame, "Weekly\nQuota", columns["weekly_quota"], "w", sort_id="weekly_quota")
-        self._build_header_cell(self.header_frame, "Weekly Reset", columns["weekly_reset"], "w", sort_id="weekly_reset")
+        self._build_header_cell(self.header_frame, "Quota", columns["quota"], "w", sort_id="weekly_quota")
+        self._build_header_cell(self.header_frame, "Reset", columns["reset"], "w", sort_id="weekly_reset")
         self._build_header_cell(self.header_frame, "Action", columns["action"], "e")
 
     def _table_scrollbar_gutter_width(self) -> int:
@@ -858,7 +834,6 @@ class CodexMonitorApp:
         self.status_textbox = None
         self.log_toggle_button = None
         self.clear_logs_button = None
-        self.toggle_5h_columns_button = None
         self.log_textbox = None
         self.update_button = None
         self.theme_button = None
@@ -967,7 +942,6 @@ class CodexMonitorApp:
                 )
 
         self._configure_labeled_icon_button(self.log_toggle_button)
-        self._configure_labeled_icon_button(self.toggle_5h_columns_button)
         self._configure_labeled_icon_button(self.show_archived_button)
         self._update_header_sort_labels()
         for tooltip in self._tooltips + self._row_tooltips:
@@ -1050,10 +1024,10 @@ class CodexMonitorApp:
 
             label.configure(text=display_text, text_color=tokens["header_fg"])
 
-    def _build_value_label(
+    def _build_stacked_value_label(
         self,
         parent: ctk.CTkFrame,
-        text: str,
+        lines: List[str],
         text_color: str,
         column: int,
         anchor: str = "w",
@@ -1061,8 +1035,9 @@ class CodexMonitorApp:
     ) -> None:
         label = ctk.CTkLabel(
             parent,
-            text=text,
+            text="\n".join(lines),
             anchor=anchor,
+            justify="left" if anchor == "w" else "right",
             font=ctk.CTkFont(size=11, weight="bold" if bold else "normal"),
             text_color=text_color,
         )
@@ -1071,7 +1046,7 @@ class CodexMonitorApp:
             column=column,
             sticky="ew",
             padx=10,
-            pady=self.TABLE_ROW_PAD_Y,
+            pady=(3, 3),
         )
 
     def _window_reset_ts(self, data: dict, field: str) -> Optional[float]:
@@ -1093,6 +1068,15 @@ class CodexMonitorApp:
         if isinstance(used_percent, (int, float)) and not isinstance(used_percent, bool):
             return used_percent
         return None
+
+    def _has_window_data(self, data: dict, field: str) -> bool:
+        return (
+            self._window_used_percent(data, field) is not None
+            or self._window_reset_ts(data, field) is not None
+        )
+
+    def _labeled_value(self, value: str, label: str) -> str:
+        return f"{value} ({label})"
 
     def _clear_account_rows(self) -> None:
         for tooltip in self._row_tooltips:
@@ -1259,44 +1243,6 @@ class CodexMonitorApp:
         self._last_logged_status = "Logs cleared."
         self._refresh_log_textbox()
         self.status_var.set("Logs cleared.")
-
-    def toggle_5h_columns(self) -> None:
-        self.show_5h_columns = not getattr(self, "show_5h_columns", True)
-        self.state.save_show_5h_columns_preference(self.show_5h_columns)
-        if self.sort_column in ("short_quota", "short_reset") and not self.show_5h_columns:
-            self.sort_column = "weekly_quota"
-            self.sort_asc = True
-            if self._sort_save_timer:
-                self.root.after_cancel(self._sort_save_timer)
-            self._sort_save_timer = self.root.after(
-                1000,
-                lambda: self.state.save_sort_preference(self.sort_column, self.sort_asc),
-            )
-
-        self._build_account_headers()
-        if self.toggle_5h_columns_button:
-            self._update_5h_columns_button()
-        self.refresh_ui(skip_auto_fetch=True)
-
-    def _update_5h_columns_button(self) -> None:
-        if not self.toggle_5h_columns_button:
-            return
-
-        if getattr(self, "show_5h_columns", True):
-            self._configure_labeled_icon_button(
-                self.toggle_5h_columns_button,
-                icon=self._material_icon_text("visibility_off") or "○",
-                label="5h",
-            )
-            self._update_tooltip_text(self.toggle_5h_columns_button, "Hide 5h columns")
-            return
-
-        self._configure_labeled_icon_button(
-            self.toggle_5h_columns_button,
-            icon=self._material_icon_text("visibility") or "●",
-            label="5h",
-        )
-        self._update_tooltip_text(self.toggle_5h_columns_button, "Show 5h columns")
 
     def _update_tooltip_text(self, widget: tk.Misc, text: str) -> None:
         for tooltip in self._tooltips + self._row_tooltips:
@@ -1514,12 +1460,12 @@ class CodexMonitorApp:
             with open(path, "r", encoding="utf-8") as file:
                 payload = json.load(file)
             self.state.import_data(payload)
+            self.sort_column = self._normalized_sort_column(self.state.sort_column)
+            self.sort_asc = self.state.sort_asc
             self.show_archived = self.state.show_archived
-            self.show_5h_columns = self.state.show_5h_columns
             self.logs_expanded = self.state.logs_expanded
             self._build_account_headers()
             self._update_show_archived_button()
-            self._update_5h_columns_button()
             self._sync_logs_visibility()
             self.refresh_ui(skip_auto_fetch=True)
             self._update_manual_button_state()
@@ -1682,10 +1628,8 @@ class CodexMonitorApp:
     def _build_account_row(
         self,
         email: str,
-        weekly_quota_left: str,
-        short_quota_left: str,
-        short_reset_display: str,
-        weekly_reset_display: str,
+        quota_lines: List[str],
+        reset_lines: List[str],
         is_current: bool,
         is_archived: bool,
         index: int,
@@ -1760,35 +1704,19 @@ class CodexMonitorApp:
         self._force_square_button(copy_button, self.ROW_BUTTON_SIZE)
         self._attach_tooltip(copy_button, "Copy email", row_tooltip=True)
 
-        if getattr(self, "show_5h_columns", True):
-            self._build_value_label(
-                row,
-                short_quota_left,
-                row_text,
-                columns["short_quota"],
-                anchor="w",
-                bold=is_current,
-            )
-            self._build_value_label(
-                row,
-                short_reset_display,
-                row_text,
-                columns["short_reset"],
-                anchor="w",
-            )
-        self._build_value_label(
+        self._build_stacked_value_label(
             row,
-            weekly_quota_left,
+            quota_lines,
             row_text,
-            columns["weekly_quota"],
+            columns["quota"],
             anchor="w",
             bold=is_current,
         )
-        self._build_value_label(
+        self._build_stacked_value_label(
             row,
-            weekly_reset_display,
+            reset_lines,
             row_text,
-            columns["weekly_reset"],
+            columns["reset"],
             anchor="w",
         )
 
@@ -2500,20 +2428,27 @@ class CodexMonitorApp:
                         if short_used_percent is not None
                         else "-"
                     )
+                    has_short_window = self._has_window_data(data, "short_window")
+                    quota_lines = []
+                    reset_lines = []
+                    if has_short_window:
+                        quota_lines.append(self._labeled_value(short_quota_left, "5h"))
+                        reset_lines.append(self._labeled_value(short_reset_display, "5h"))
+                        quota_lines.append(self._labeled_value(weekly_quota_left, "weekly"))
+                        reset_lines.append(self._labeled_value(weekly_reset_display, "weekly"))
+                    else:
+                        quota_lines.append(weekly_quota_left)
+                        reset_lines.append(weekly_reset_display)
                 except Exception:
-                    short_reset_display = "Error"
-                    weekly_reset_display = "Error"
-                    weekly_quota_left = "Error"
-                    short_quota_left = "Error"
+                    quota_lines = ["Error"]
+                    reset_lines = ["Error"]
                     is_current = email == self.state.current_account_email
                     is_archived = self._is_archived_account(data)
 
                 self._build_account_row(
                     email=email,
-                    weekly_quota_left=weekly_quota_left,
-                    short_quota_left=short_quota_left,
-                    short_reset_display=short_reset_display,
-                    weekly_reset_display=weekly_reset_display,
+                    quota_lines=quota_lines,
+                    reset_lines=reset_lines,
                     is_current=is_current,
                     is_archived=is_archived,
                     index=index,
