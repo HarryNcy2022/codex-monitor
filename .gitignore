@@ -10,3 +10,5 @@ dist/
 
 # macOS
 .DS_Store
+/.idea/
+/.venv/

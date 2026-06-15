@@ -2,18 +2,38 @@
 
 import os
 
+try:
+    from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+except Exception:
+    codex_sdk_datas = []
+    codex_sdk_binaries = []
+else:
+    try:
+        codex_sdk_datas = (
+            collect_data_files('openai_codex')
+            + collect_data_files('codex_cli_bin')
+        )
+        codex_sdk_binaries = (
+            collect_dynamic_libs('openai_codex')
+            + collect_dynamic_libs('codex_cli_bin')
+        )
+    except Exception:
+        codex_sdk_datas = []
+        codex_sdk_binaries = []
+
 
 a = Analysis(
     ['codex_monitor.py'],
     pathex=[],
-    binaries=[],
+    binaries=codex_sdk_binaries,
     datas=[
         (
             'codex_monitor_app/assets/fonts',
             'codex_monitor_app/assets/fonts',
         ),
+        *codex_sdk_datas,
     ],
-    hiddenimports=[],
+    hiddenimports=['openai_codex', 'codex_cli_bin'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

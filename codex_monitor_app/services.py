@@ -1,9 +1,17 @@
 import json
 import os
+import re
+import shutil
+import tempfile
 import time
 from typing import Dict, List, Optional, Tuple
 
-from .config import AUTH_FILE_PATH, AUTO_FETCH_INTERVALS, AUTO_FETCH_OPTIONS
+from .config import (
+    AUTH_ACCOUNTS_DIR,
+    AUTH_FILE_PATH,
+    AUTO_FETCH_INTERVALS,
+    AUTO_FETCH_OPTIONS,
+)
 from .models import AuthFileSnapshot, RateLimitWindow, UsageMap, UsageResponse
 from .storage import UsageStorage
 
@@ -138,7 +146,10 @@ class MonitorStateService:
         self.latest_auth_jwt = None
 
     def apply_usage_response(
-        self, response_data: UsageResponse, jwt: str
+        self,
+        response_data: UsageResponse,
+        jwt: str,
+        activate: bool = True,
     ) -> Optional[str]:
         email = response_data.get("email")
         rate_limit = response_data.get("rate_limit", {})
@@ -177,7 +188,10 @@ class MonitorStateService:
             next_usage["weekly_window"] = weekly_window
 
         self.usage_map[email].update(next_usage)
-        self.set_current_account(email, jwt)
+        if activate:
+            self.set_current_account(email, jwt)
+        else:
+            self.session_tokens[email] = jwt
         self.save_data()
         return email
 
@@ -290,14 +304,22 @@ class MonitorStateService:
 
 
 class AuthFileService:
-    def __init__(self, auth_file_path: str = AUTH_FILE_PATH):
+    def __init__(
+        self,
+        auth_file_path: str = AUTH_FILE_PATH,
+        accounts_dir: str = AUTH_ACCOUNTS_DIR,
+    ):
         self.auth_file_path = auth_file_path
+        self.accounts_dir = accounts_dir
 
     def auth_file_exists(self) -> bool:
         return os.path.exists(self.auth_file_path)
 
     def load_snapshot(self) -> AuthFileSnapshot:
-        with open(self.auth_file_path, "r", encoding="utf-8") as file:
+        return self.load_snapshot_from_path(self.auth_file_path)
+
+    def load_snapshot_from_path(self, auth_file_path: str) -> AuthFileSnapshot:
+        with open(auth_file_path, "r", encoding="utf-8") as file:
             auth_data = json.load(file)
         if not isinstance(auth_data, dict):
             raise ValueError("auth.json root must be an object")
@@ -305,3 +327,133 @@ class AuthFileService:
 
     def load_access_token(self) -> Optional[str]:
         return self.load_snapshot().get("tokens", {}).get("access_token")
+
+    def backup_path_for_email(self, email: str) -> str:
+        return os.path.join(
+            self.accounts_dir,
+            f"auth-{self._safe_account_file_key(email)}.json",
+        )
+
+    def backup_exists(self, email: str) -> bool:
+        return os.path.exists(self.backup_path_for_email(email))
+
+    def backup_current_auth(self, email: str) -> str:
+        if not self.auth_file_exists():
+            raise FileNotFoundError(self.auth_file_path)
+
+        return self.backup_auth_from_path(email, self.auth_file_path)
+
+    def backup_auth_from_path(self, email: str, source_path: str) -> str:
+        return self._copy_auth_file(
+            source_path=source_path,
+            target_path=self.backup_path_for_email(email),
+        )
+
+    def remove_backup(self, email: Optional[str]) -> bool:
+        if not email:
+            return False
+
+        try:
+            os.remove(self.backup_path_for_email(email))
+            return True
+        except FileNotFoundError:
+            return False
+
+    def remove_backup_if_access_token_matches(self, email: str, access_token: str) -> bool:
+        if not email or not access_token:
+            return False
+
+        try:
+            current_backup_token = self.load_backup_access_token(email)
+        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, TypeError):
+            return False
+
+        if current_backup_token != access_token:
+            return False
+
+        return self.remove_backup(email)
+
+    def load_backup_snapshot(self, email: str) -> AuthFileSnapshot:
+        with open(self.backup_path_for_email(email), "r", encoding="utf-8") as file:
+            auth_data = json.load(file)
+        if not isinstance(auth_data, dict):
+            raise ValueError("backup auth root must be an object")
+        return auth_data
+
+    def load_backup_access_token(self, email: str) -> Optional[str]:
+        return self.load_backup_snapshot(email).get("tokens", {}).get("access_token")
+
+    def switch_to_account_backup(
+        self,
+        target_email: str,
+        current_email: Optional[str],
+    ) -> Optional[str]:
+        if not self.backup_exists(target_email):
+            raise FileNotFoundError(self.backup_path_for_email(target_email))
+
+        current_backup_path = None
+        if current_email and self.auth_file_exists():
+            current_backup_path = self.backup_current_auth(current_email)
+
+        self._copy_auth_file(
+            source_path=self.backup_path_for_email(target_email),
+            target_path=self.auth_file_path,
+        )
+        return current_backup_path
+
+    def create_login_codex_home(self) -> str:
+        os.makedirs(self.accounts_dir, exist_ok=True)
+        login_home = tempfile.mkdtemp(prefix="login-", dir=self.accounts_dir)
+        try:
+            os.chmod(login_home, 0o700)
+        except OSError:
+            pass
+        return login_home
+
+    def remove_login_codex_home(self, login_codex_home: Optional[str]) -> None:
+        if not login_codex_home:
+            return
+
+        accounts_dir = os.path.realpath(self.accounts_dir)
+        target = os.path.realpath(login_codex_home)
+        if not target.startswith(accounts_dir + os.sep):
+            return
+        if os.path.basename(target).startswith("login-"):
+            shutil.rmtree(target, ignore_errors=True)
+
+    def active_auth_path_for_home(self, codex_home: str) -> str:
+        return os.path.join(codex_home, "auth.json")
+
+    def activate_auth_from_path(self, source_path: str) -> str:
+        return self._copy_auth_file(
+            source_path=source_path,
+            target_path=self.auth_file_path,
+        )
+
+    def _copy_auth_file(self, source_path: str, target_path: str) -> str:
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(
+            prefix=f".{os.path.basename(target_path)}.",
+            suffix=".tmp",
+            dir=os.path.dirname(target_path),
+        )
+        os.close(temp_fd)
+        try:
+            shutil.copyfile(source_path, temp_path)
+            try:
+                os.chmod(temp_path, 0o600)
+            except OSError:
+                pass
+            os.replace(temp_path, target_path)
+        except Exception:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            raise
+        return target_path
+
+    def _safe_account_file_key(self, email: str) -> str:
+        safe_email = re.sub(r"[^A-Za-z0-9._@+-]+", "_", email.strip())
+        safe_email = safe_email.strip("._-")
+        return safe_email or "unknown"

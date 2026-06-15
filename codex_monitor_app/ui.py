@@ -1,10 +1,14 @@
 import json
 import os
+import re
+import shutil
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
 import urllib.error
+import webbrowser
 from datetime import datetime
 from tkinter import filedialog, messagebox
 from typing import Dict, List, Optional, Tuple
@@ -17,6 +21,7 @@ from .config import (
     APP_TITLE,
     AUTH_DIR,
     AUTH_FILE_PATH,
+    AUTO_FETCH_INTERVALS,
     AUTO_FETCH_OPTIONS,
     LOCAL_LOG_FILE,
     UPDATE_CHECK_INTERVAL_SECONDS,
@@ -154,12 +159,14 @@ class CodexMonitorApp:
         self._last_seen_auth_signature = self._get_auth_file_signature()
         self._last_auth_refresh_marker: Optional[str] = None
         self._last_seen_access_token: Optional[str] = None
+        self._suppressed_auth_signature: Optional[Tuple[int, int]] = None
         self._account_confirm_result = False
         self.manual_button: Optional[ctk.CTkButton] = None
         self.copy_status_button: Optional[ctk.CTkButton] = None
         self.export_button: Optional[ctk.CTkButton] = None
         self.import_button: Optional[ctk.CTkButton] = None
         self.show_archived_button: Optional[ctk.CTkFrame] = None
+        self.login_button: Optional[ctk.CTkButton] = None
         self.auto_fetch_label: Optional[ctk.CTkLabel] = None
         self.auto_fetch_menu: Optional[ctk.CTkOptionMenu] = None
         self.status_textbox: Optional[tk.Text] = None
@@ -180,6 +187,13 @@ class CodexMonitorApp:
         self._manual_update_check_requested = False
         self._update_prepare_in_progress = False
         self._update_in_progress = False
+        self._login_in_progress = False
+        self._login_dialog: Optional[ctk.CTkToplevel] = None
+        self._login_output_textbox: Optional[tk.Text] = None
+        self._login_opened_url: Optional[str] = None
+        self._login_process: Optional[subprocess.Popen] = None
+        self._login_success_email: Optional[str] = None
+        self._backup_auto_fetch_cursor = 0
         self._tooltips = []
         self._row_tooltips = []
         self._material_symbols_available = register_material_symbols_font()
@@ -475,13 +489,32 @@ class CodexMonitorApp:
         self._force_square_button(self.import_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.import_button, "Import data")
 
+        login_text = self._material_icon_text("person_add")
+        self.login_button = ctk.CTkButton(
+            controls_frame,
+            text=login_text or "+",
+            command=self.start_codex_login,
+            corner_radius=self.TOOLBAR_BUTTON_RADIUS,
+            height=self.TOOLBAR_BUTTON_SIZE,
+            width=self.TOOLBAR_BUTTON_SIZE,
+            border_spacing=0,
+            anchor="center",
+            font=self._material_icon_font(18),
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        self.login_button.grid(row=0, column=6, sticky="e", padx=(0, 10), pady=0)
+        self._force_square_button(self.login_button, self.TOOLBAR_BUTTON_SIZE)
+        self._attach_tooltip(self.login_button, "Add account")
+
         self.auto_fetch_label = ctk.CTkLabel(
             controls_frame,
             text="Auto Fetch",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=tokens["muted"],
         )
-        self.auto_fetch_label.grid(row=0, column=6, sticky="e", padx=(0, 5), pady=0)
+        self.auto_fetch_label.grid(row=0, column=7, sticky="e", padx=(0, 5), pady=0)
 
         self.auto_fetch_menu = ctk.CTkOptionMenu(
             controls_frame,
@@ -499,7 +532,7 @@ class CodexMonitorApp:
             text_color=tokens["control_fg"],
             anchor="w",
         )
-        self.auto_fetch_menu.grid(row=0, column=7, sticky="e", padx=(0, 6), pady=0)
+        self.auto_fetch_menu.grid(row=0, column=8, sticky="e", padx=(0, 6), pady=0)
 
         refresh_text = self._material_icon_text("refresh")
         self.manual_button = ctk.CTkButton(
@@ -516,7 +549,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.manual_button.grid(row=0, column=8, sticky="e", padx=(0, 6), pady=0)
+        self.manual_button.grid(row=0, column=9, sticky="e", padx=(0, 6), pady=0)
         self._force_square_button(self.manual_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.manual_button, "Fetch quota")
 
@@ -527,7 +560,7 @@ class CodexMonitorApp:
             command=self.toggle_show_archived,
             tooltip="Hide archived accounts" if self.show_archived else "Show archived accounts",
         )
-        self.show_archived_button.grid(row=0, column=9, sticky="e", padx=(0, 6), pady=0)
+        self.show_archived_button.grid(row=0, column=10, sticky="e", padx=(0, 6), pady=0)
 
         check_update_text = self._material_icon_text("update")
         self.check_update_button = ctk.CTkButton(
@@ -544,7 +577,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.check_update_button.grid(row=0, column=10, sticky="e", padx=(0, 6), pady=0)
+        self.check_update_button.grid(row=0, column=11, sticky="e", padx=(0, 6), pady=0)
         self._force_square_button(self.check_update_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.check_update_button, "Check for updates")
 
@@ -562,7 +595,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.update_button.grid(row=0, column=11, sticky="e", padx=(0, 6), pady=0)
+        self.update_button.grid(row=0, column=12, sticky="e", padx=(0, 6), pady=0)
 
         theme_text = self._appearance_toggle_icon()
         self.theme_button = ctk.CTkButton(
@@ -579,7 +612,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        self.theme_button.grid(row=0, column=12, sticky="e", padx=(0, 0), pady=0)
+        self.theme_button.grid(row=0, column=13, sticky="e", padx=(0, 0), pady=0)
         self._force_square_button(self.theme_button, self.TOOLBAR_BUTTON_SIZE)
         self._attach_tooltip(self.theme_button, "Toggle theme")
 
@@ -622,7 +655,7 @@ class CodexMonitorApp:
         frame.grid_columnconfigure(columns["email"], weight=5, uniform="account-cols")
         frame.grid_columnconfigure(columns["quota"], weight=2, uniform="account-cols", minsize=92)
         frame.grid_columnconfigure(columns["reset"], weight=5, uniform="account-cols")
-        frame.grid_columnconfigure(columns["action"], weight=2, uniform="account-cols", minsize=92)
+        frame.grid_columnconfigure(columns["action"], weight=3, uniform="account-cols", minsize=152)
 
     def _build_account_headers(self) -> None:
         if not self.header_frame:
@@ -664,6 +697,8 @@ class CodexMonitorApp:
             "upload": "f09b",
             "sync": "e863",
             "delete_sweep": "e16c",
+            "swap_horiz": "e8d4",
+            "person_add": "e7fe",
         }
         if not self._material_symbols_available:
             return ""
@@ -828,6 +863,7 @@ class CodexMonitorApp:
         self.copy_status_button = None
         self.export_button = None
         self.import_button = None
+        self.login_button = None
         self.show_archived_button = None
         self.auto_fetch_label = None
         self.auto_fetch_menu = None
@@ -929,6 +965,7 @@ class CodexMonitorApp:
             self.clear_logs_button,
             self.export_button,
             self.import_button,
+            self.login_button,
             self.manual_button,
             self.check_update_button,
             self.update_button,
@@ -1390,10 +1427,127 @@ class CodexMonitorApp:
             confirm_text="Archive",
         )
 
+    def _confirm_switch_account(self, email: str) -> bool:
+        return self._confirm_account_action(
+            title="Switch account",
+            heading="Switch account?",
+            message=(
+                "This will replace ~/.codex/auth.json with the saved auth backup for:\n"
+                f"{email}"
+            ),
+            confirm_text="Switch",
+        )
+
+    def _show_switch_success_dialog(self, email: str) -> None:
+        tokens = self._theme_tokens()
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Account switched")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.configure(fg_color=tokens["card"])
+
+        container = ctk.CTkFrame(
+            dialog,
+            corner_radius=14,
+            fg_color=tokens["card"],
+            border_width=1,
+            border_color=tokens["border"],
+        )
+        container.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        container.grid_columnconfigure(0, weight=1)
+
+        title_label = ctk.CTkLabel(
+            container,
+            text="Account switched",
+            anchor="w",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=tokens["text"],
+        )
+        title_label.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 4))
+
+        message_label = ctk.CTkLabel(
+            container,
+            text=(
+                f"auth.json is now using:\n{email}\n\n"
+                "Restart Codex for the desktop app to pick up the new session."
+            ),
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(size=12),
+            text_color=tokens["muted"],
+        )
+        message_label.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 14))
+
+        buttons = ctk.CTkFrame(container, fg_color="transparent")
+        buttons.grid(row=2, column=0, sticky="e", padx=14, pady=(0, 14))
+
+        closed = False
+
+        def close_dialog() -> None:
+            nonlocal closed
+            if closed:
+                return
+            closed = True
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+
+        def restart_and_close() -> None:
+            close_dialog()
+            self.restart_codex_app()
+
+        later_button = ctk.CTkButton(
+            buttons,
+            text="Later",
+            command=close_dialog,
+            corner_radius=8,
+            height=30,
+            width=82,
+            fg_color=tokens["row_border"],
+            hover_color=tokens["scrollbar_thumb_hover"],
+            text_color=tokens["text"],
+        )
+        later_button.grid(row=0, column=0, padx=(0, 8))
+
+        restart_button = ctk.CTkButton(
+            buttons,
+            text="Restart Codex",
+            command=restart_and_close,
+            corner_radius=8,
+            height=30,
+            width=116,
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        restart_button.grid(row=0, column=1)
+
+        dialog.bind("<Escape>", lambda _event: close_dialog())
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        dialog.update_idletasks()
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        dialog_width = dialog.winfo_reqwidth()
+        dialog_height = dialog.winfo_reqheight()
+        x = root_x + max((root_width - dialog_width) // 2, 0)
+        y = root_y + max((root_height - dialog_height) // 2, 0)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.grab_set()
+        dialog.lift()
+        restart_button.focus_set()
+
     def remove_account(self, email: str) -> None:
         if not self._confirm_remove_account(email):
             return
 
+        self.auth_file_service.remove_backup(email)
         if self.state.remove_account(email):
             self.refresh_ui(skip_auto_fetch=True)
             self._update_manual_button_state()
@@ -1412,6 +1566,99 @@ class CodexMonitorApp:
         if self.state.archive_account(email):
             self.refresh_ui(skip_auto_fetch=True)
             self.status_var.set(f"Archived {email}.")
+
+    def switch_account(self, email: str) -> None:
+        if email == self.state.current_account_email:
+            self.status_var.set(f"{email} is already active.")
+            return
+
+        if not self.auth_file_service.backup_exists(email):
+            self.status_var.set(f"No auth backup available for {email}.")
+            return
+
+        if not self._confirm_switch_account(email):
+            return
+
+        try:
+            snapshot = self.auth_file_service.load_backup_snapshot(email)
+            jwt = snapshot.get("tokens", {}).get("access_token")
+            if not jwt:
+                self.status_var.set(f"Auth backup for {email} has no access_token.")
+                return
+
+            self.auth_file_service.switch_to_account_backup(
+                target_email=email,
+                current_email=self.state.current_account_email,
+            )
+            self._last_seen_auth_signature = self._get_auth_file_signature()
+            self._suppressed_auth_signature = self._last_seen_auth_signature
+            self._remember_auth_snapshot(snapshot)
+            self.state.set_current_account(email, jwt)
+            self.refresh_ui(skip_auto_fetch=True)
+            self._begin_fetch(f"Switched to {email}. Fetching latest quota...")
+            threading.Thread(
+                target=self._bg_fetch_single,
+                args=(email, jwt),
+                daemon=True,
+            ).start()
+            self._show_switch_success_dialog(email)
+        except Exception as error:
+            self.status_var.set(f"Switch account failed: {error}")
+
+    def fetch_backup_account_quota(self, email: str) -> None:
+        if not self.auth_file_service.backup_exists(email):
+            self.status_var.set(f"No auth backup available for {email}.")
+            self.refresh_ui(skip_auto_fetch=True)
+            return
+
+        try:
+            jwt = self.auth_file_service.load_backup_access_token(email)
+        except Exception as error:
+            self.status_var.set(f"Failed to read auth backup for {email}: {error}")
+            return
+
+        if not jwt:
+            self.status_var.set(f"Auth backup for {email} has no access_token.")
+            return
+
+        self._begin_fetch(f"Fetching quota for {email} from saved auth backup...")
+        threading.Thread(
+            target=self._bg_fetch_backup_account,
+            args=(email, jwt),
+            daemon=True,
+        ).start()
+
+    def restart_codex_app(self) -> None:
+        if sys.platform != "darwin":
+            self.status_var.set(
+                "Please restart Codex manually for this account switch to take effect."
+            )
+            return
+
+        self.status_var.set("Restarting Codex...")
+        threading.Thread(target=self._bg_restart_codex_app, daemon=True).start()
+
+    def _bg_restart_codex_app(self) -> None:
+        try:
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    'tell application "Codex" to quit',
+                    "-e",
+                    "delay 1",
+                    "-e",
+                    'tell application "Codex" to activate',
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            message = "Requested Codex restart."
+        except Exception as error:
+            message = f"Failed to restart Codex: {error}"
+
+        self.root.after(0, lambda m=message: self.status_var.set(m))
 
     def toggle_show_archived(self) -> None:
         self.show_archived = not self.show_archived
@@ -1473,6 +1720,395 @@ class CodexMonitorApp:
         except Exception as error:
             self.status_var.set(f"Import failed: {error}")
 
+    def start_codex_login(self) -> None:
+        if self._login_in_progress:
+            self.status_var.set("Codex login is already in progress.")
+            return
+
+        self._snapshot_active_auth_before_login()
+        self._login_in_progress = True
+        self._login_opened_url = None
+        self._login_success_email = None
+        self._show_codex_login_dialog()
+        self._append_login_output("Starting: codex login\n")
+        self.status_var.set("Starting Codex login...")
+        self._update_manual_button_state()
+        threading.Thread(target=self._bg_codex_login, daemon=True).start()
+
+    def _snapshot_active_auth_before_login(self) -> None:
+        email = self.state.current_account_email
+        if not email:
+            return
+
+        try:
+            snapshot = self.auth_file_service.load_snapshot()
+            if not snapshot.get("tokens", {}).get("access_token"):
+                return
+            self.auth_file_service.backup_current_auth(email)
+        except Exception as error:
+            print(
+                "[Safe Error Log] Failed to snapshot active auth before login for "
+                f"{email}: {error}"
+            )
+
+    def _codex_login_command(self) -> Optional[List[str]]:
+        codex_bin = self._find_codex_binary()
+        if not codex_bin:
+            return None
+
+        if sys.platform == "win32":
+            _, extension = os.path.splitext(codex_bin)
+            if extension.lower() in (".bat", ".cmd"):
+                return ["cmd", "/c", codex_bin, "login"]
+        return [codex_bin, "login"]
+
+    def _find_codex_binary(self) -> Optional[str]:
+        configured_bin = os.environ.get("CODEX_MONITOR_CODEX_BIN")
+        if configured_bin and os.path.isfile(configured_bin):
+            return configured_bin
+
+        path_bin = shutil.which("codex")
+        if path_bin:
+            return path_bin
+
+        binary_names = ["codex.exe"] if sys.platform == "win32" else ["codex"]
+        search_roots: List[str] = []
+        frozen_root = getattr(sys, "_MEIPASS", None)
+        if isinstance(frozen_root, str):
+            search_roots.append(frozen_root)
+        if getattr(sys, "frozen", False):
+            search_roots.append(os.path.dirname(sys.executable))
+
+        try:
+            import openai_codex
+        except Exception:
+            openai_codex = None
+
+        if openai_codex is not None:
+            package_file = getattr(openai_codex, "__file__", None)
+            if package_file:
+                package_dir = os.path.dirname(package_file)
+                search_roots.append(package_dir)
+                search_roots.append(os.path.dirname(package_dir))
+
+        try:
+            from importlib import metadata
+            codex_cli_dist = metadata.distribution("openai-codex-cli-bin")
+        except Exception:
+            codex_cli_dist = None
+
+        if codex_cli_dist is not None:
+            for dist_file in codex_cli_dist.files or []:
+                dist_path = str(dist_file)
+                if dist_path.replace("\\", "/").endswith(("/bin/codex", "/bin/codex.exe")):
+                    candidate = str(codex_cli_dist.locate_file(dist_file))
+                    if os.path.isfile(candidate):
+                        self._ensure_executable(candidate)
+                        return candidate
+
+        seen_roots = set()
+        for root in search_roots:
+            if not root or root in seen_roots or not os.path.isdir(root):
+                continue
+            seen_roots.add(root)
+            for current_root, _dirs, files in os.walk(root):
+                for binary_name in binary_names:
+                    if binary_name not in files:
+                        continue
+                    candidate = os.path.join(current_root, binary_name)
+                    if not os.path.isfile(candidate):
+                        continue
+                    self._ensure_executable(candidate)
+                    return candidate
+
+        return None
+
+    def _ensure_executable(self, path: str) -> None:
+        if sys.platform == "win32" or os.access(path, os.X_OK):
+            return
+
+        try:
+            current_mode = os.stat(path).st_mode
+            os.chmod(path, current_mode | 0o755)
+        except OSError:
+            pass
+
+    def _show_codex_login_dialog(self) -> None:
+        if self._login_dialog and self._login_dialog.winfo_exists():
+            self._login_dialog.lift()
+            return
+
+        tokens = self._theme_tokens()
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Add account")
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.configure(fg_color=tokens["card"])
+        dialog.minsize(440, 280)
+        self._login_dialog = dialog
+
+        container = ctk.CTkFrame(
+            dialog,
+            corner_radius=14,
+            fg_color=tokens["card"],
+            border_width=1,
+            border_color=tokens["border"],
+        )
+        container.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_rowconfigure(1, weight=1)
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(0, weight=1)
+
+        title_label = ctk.CTkLabel(
+            container,
+            text="Login with Codex",
+            anchor="w",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=tokens["text"],
+        )
+        title_label.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 6))
+
+        output_textbox = tk.Text(
+            container,
+            height=9,
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=tokens["border"],
+            highlightcolor=tokens["border"],
+            relief="flat",
+            background=tokens["table_shell"],
+            foreground=tokens["text"],
+            insertbackground=tokens["text"],
+            selectbackground=tokens["selection_bg"],
+            font=("TkDefaultFont", 11),
+        )
+        output_textbox.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 12))
+        output_textbox.configure(state="disabled")
+        self._login_output_textbox = output_textbox
+
+        buttons = ctk.CTkFrame(container, fg_color="transparent")
+        buttons.grid(row=2, column=0, sticky="e", padx=14, pady=(0, 14))
+
+        cancel_button = ctk.CTkButton(
+            buttons,
+            text="Cancel",
+            command=self.cancel_codex_login,
+            corner_radius=8,
+            height=30,
+            width=82,
+            fg_color=tokens["row_border"],
+            hover_color=tokens["scrollbar_thumb_hover"],
+            text_color=tokens["text"],
+        )
+        cancel_button.grid(row=0, column=0, padx=(0, 8))
+
+        close_button = ctk.CTkButton(
+            buttons,
+            text="Close",
+            command=self._close_codex_login_dialog,
+            corner_radius=8,
+            height=30,
+            width=82,
+            fg_color=tokens["control_bg"],
+            hover_color=tokens["control_hover"],
+            text_color=tokens["control_fg"],
+        )
+        close_button.grid(row=0, column=1)
+
+        dialog.protocol("WM_DELETE_WINDOW", self._close_codex_login_dialog)
+        dialog.update_idletasks()
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        dialog_width = dialog.winfo_reqwidth()
+        dialog_height = dialog.winfo_reqheight()
+        x = root_x + max((root_width - dialog_width) // 2, 0)
+        y = root_y + max((root_height - dialog_height) // 2, 0)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.lift()
+
+    def _close_codex_login_dialog(self) -> None:
+        if self._login_dialog:
+            try:
+                self._login_dialog.destroy()
+            except tk.TclError:
+                pass
+        self._login_dialog = None
+        self._login_output_textbox = None
+
+    def cancel_codex_login(self) -> None:
+        process = self._login_process
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+            self.status_var.set("Codex login cancelled.")
+            self._append_login_output("\nLogin cancelled.\n")
+        self._login_in_progress = False
+        self._login_process = None
+        self._update_manual_button_state()
+
+    def _append_login_output(self, text: str) -> None:
+        textbox = self._login_output_textbox
+        if not textbox:
+            return
+
+        clean_text = self._strip_terminal_sequences(text)
+        try:
+            textbox.configure(state="normal")
+            textbox.insert("end", clean_text)
+            textbox.see("end")
+            textbox.configure(state="disabled")
+        except tk.TclError:
+            pass
+
+    def _strip_terminal_sequences(self, text: str) -> str:
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
+        return text
+
+    def _handle_codex_login_output_line(self, line: str) -> None:
+        clean_line = self._strip_terminal_sequences(line)
+        self._append_login_output(clean_line)
+        match = re.search(r"https?://[^\s]+", clean_line)
+        if not match:
+            return
+
+        url = match.group(0).rstrip(".,);]")
+        if not url or url == self._login_opened_url:
+            return
+
+        self._login_opened_url = url
+        try:
+            webbrowser.open(url)
+            self.status_var.set("Opened Codex login URL. Complete login in the browser.")
+        except Exception as error:
+            self._append_login_output(f"Failed to open browser: {error}\n")
+
+    def _bg_codex_login(self) -> None:
+        command = self._codex_login_command()
+        if not command:
+            if sys.version_info < (3, 10):
+                message = (
+                    "Bundled Codex login requires Python 3.10+. Recreate the "
+                    "venv with Python 3.10 or newer, or set CODEX_MONITOR_CODEX_BIN."
+                )
+            else:
+                message = (
+                    "Codex runtime was not found. Rebuild the app with the "
+                    "openai-codex dependency, or set CODEX_MONITOR_CODEX_BIN."
+                )
+            self.root.after(0, lambda m=message: self._finish_codex_login(m))
+            return
+
+        login_codex_home: Optional[str] = None
+        popen_kwargs = {}
+        if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        try:
+            login_codex_home = self.auth_file_service.create_login_codex_home()
+            login_auth_path = self.auth_file_service.active_auth_path_for_home(
+                login_codex_home,
+            )
+            self.root.after(
+                0,
+                lambda: self._append_login_output(
+                    "Using isolated Codex login session.\n",
+                ),
+            )
+
+            process_env = os.environ.copy()
+            process_env["CODEX_HOME"] = login_codex_home
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+                env=process_env,
+                **popen_kwargs,
+            )
+            self._login_process = process
+            if process.stdout:
+                for line in process.stdout:
+                    self.root.after(
+                        0,
+                        lambda captured_line=line: self._handle_codex_login_output_line(
+                            captured_line,
+                        ),
+                    )
+            return_code = process.wait()
+            if return_code == 0:
+                message = self._import_isolated_codex_login(login_auth_path)
+            else:
+                message = f"Codex login exited with code {return_code}."
+        except FileNotFoundError:
+            message = "Codex CLI was not found on PATH."
+        except Exception as error:
+            message = f"Codex login failed: {error}"
+        finally:
+            self.auth_file_service.remove_login_codex_home(login_codex_home)
+
+        self.root.after(0, lambda m=message: self._finish_codex_login(m))
+
+    def _import_isolated_codex_login(self, login_auth_path: str) -> str:
+        if not os.path.exists(login_auth_path):
+            return (
+                "Codex login finished, but isolated auth.json was not created. "
+                "Set Codex credential storage to file-based auth and try again."
+            )
+
+        snapshot = self.auth_file_service.load_snapshot_from_path(login_auth_path)
+        jwt = snapshot.get("tokens", {}).get("access_token")
+        if not jwt:
+            return "Codex login finished, but isolated auth.json has no access_token."
+
+        self.auth_file_service.activate_auth_from_path(login_auth_path)
+        self._last_seen_auth_signature = self._get_auth_file_signature()
+        self._suppressed_auth_signature = self._last_seen_auth_signature
+        self._remember_auth_snapshot(snapshot)
+
+        try:
+            response = self._fetch_usage(jwt)
+            email = self.state.apply_usage_response(response, jwt)
+        except Exception as error:
+            self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
+            return f"Codex login finished, but quota fetch failed: {error}"
+
+        if not email:
+            self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
+            return "Codex login finished, but quota response did not include an email."
+
+        try:
+            self.auth_file_service.backup_auth_from_path(email, login_auth_path)
+        except Exception as backup_error:
+            print(
+                "[Safe Error Log] Failed to save isolated login backup for "
+                f"{email}: {backup_error}"
+            )
+
+        self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
+        self._login_success_email = email
+        return f"Codex login finished. Added and activated {email}."
+
+    def _finish_codex_login(self, message: str) -> None:
+        self._login_in_progress = False
+        self._login_process = None
+        self.status_var.set(message)
+        self._append_login_output(f"\n{message}\n")
+        success_email = self._login_success_email
+        self._login_success_email = None
+        if success_email:
+            self._close_codex_login_dialog()
+            self._show_switch_success_dialog(success_email)
+        self._update_manual_button_state()
+
     def _schedule_next_update_check(self) -> None:
         if self._update_check_timer_id:
             self.root.after_cancel(self._update_check_timer_id)
@@ -1493,10 +2129,10 @@ class CodexMonitorApp:
         )
         if show_button:
             self.update_button.grid()
-            self.theme_button.grid_configure(column=12)
+            self.theme_button.grid_configure(column=13)
         else:
             self.update_button.grid_remove()
-            self.theme_button.grid_configure(column=11)
+            self.theme_button.grid_configure(column=12)
 
     def _animate_spinner(self) -> None:
         if not self.manual_button or self._pending_fetches == 0:
@@ -1574,6 +2210,15 @@ class CodexMonitorApp:
                 )
             self._force_square_button(check_update_button, self.TOOLBAR_BUTTON_SIZE)
 
+        if self.login_button:
+            login_text = self._material_icon_text("person_add")
+            self.login_button.configure(
+                state="disabled" if self._login_in_progress else "normal",
+                text=login_text or "+",
+                font=self._material_icon_font(18),
+            )
+            self._force_square_button(self.login_button, self.TOOLBAR_BUTTON_SIZE)
+
         current_email = self.state.current_account_email
         if self.auto_fetch_menu:
             if current_email:
@@ -1632,6 +2277,7 @@ class CodexMonitorApp:
         reset_lines: List[str],
         is_current: bool,
         is_archived: bool,
+        has_auth_backup: bool,
         index: int,
     ) -> None:
         tokens = self._theme_tokens()
@@ -1728,6 +2374,55 @@ class CodexMonitorApp:
             padx=10,
             pady=self.TABLE_ROW_PAD_Y,
         )
+        action_column = 0
+
+        if has_auth_backup and not is_current:
+            fetch_text = self._material_icon_text("refresh")
+            fetch_button = ctk.CTkButton(
+                actions_cell,
+                text=fetch_text or "⟳",
+                command=lambda account_email=email: self.fetch_backup_account_quota(
+                    account_email
+                ),
+                corner_radius=self.ROW_BUTTON_RADIUS,
+                height=self.ROW_BUTTON_SIZE,
+                width=self.ROW_BUTTON_SIZE,
+                border_spacing=0,
+                anchor="center",
+                font=self._material_icon_font(16),
+                fg_color=tokens["control_bg"],
+                hover_color=tokens["control_hover"],
+                text_color=tokens["control_fg"],
+            )
+            fetch_button.grid(row=0, column=action_column, sticky="e", padx=(0, 5))
+            self._force_square_button(fetch_button, self.ROW_BUTTON_SIZE)
+            self._attach_tooltip(fetch_button, "Fetch quota", row_tooltip=True)
+            action_column += 1
+
+        if has_auth_backup and not is_current:
+            switch_text = self._material_icon_text("swap_horiz")
+            switch_button = ctk.CTkButton(
+                actions_cell,
+                text=switch_text or "⇄",
+                command=lambda account_email=email: self.switch_account(account_email),
+                corner_radius=self.ROW_BUTTON_RADIUS,
+                height=self.ROW_BUTTON_SIZE,
+                width=self.ROW_BUTTON_SIZE,
+                border_spacing=0,
+                anchor="center",
+                font=self._material_icon_font(16),
+                fg_color=tokens["control_bg"],
+                hover_color=tokens["control_hover"],
+                text_color=tokens["control_fg"],
+            )
+            switch_button.grid(row=0, column=action_column, sticky="e", padx=(0, 5))
+            self._force_square_button(switch_button, self.ROW_BUTTON_SIZE)
+            self._attach_tooltip(
+                switch_button,
+                "Switch Account",
+                row_tooltip=True,
+            )
+            action_column += 1
 
         archive_text = self._material_icon_text("unarchive" if is_archived else "archive")
         archive_button = ctk.CTkButton(
@@ -1747,13 +2442,14 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        archive_button.grid(row=0, column=0, sticky="e", padx=(0, 6))
+        archive_button.grid(row=0, column=action_column, sticky="e", padx=(0, 5))
         self._force_square_button(archive_button, self.ROW_BUTTON_SIZE)
         self._attach_tooltip(
             archive_button,
             "Unarchive account" if is_archived else "Archive account",
             row_tooltip=True,
         )
+        action_column += 1
 
         remove_text = self._material_icon_text("delete")
         remove_button = ctk.CTkButton(
@@ -1770,7 +2466,7 @@ class CodexMonitorApp:
             hover_color=tokens["control_hover"],
             text_color=tokens["control_fg"],
         )
-        remove_button.grid(row=0, column=1, sticky="e")
+        remove_button.grid(row=0, column=action_column, sticky="e")
         self._force_square_button(remove_button, self.ROW_BUTTON_SIZE)
         self._attach_tooltip(remove_button, "Remove account", row_tooltip=True)
 
@@ -1825,7 +2521,17 @@ class CodexMonitorApp:
     def _handle_file_changed(self) -> None:
         self._auth_change_job = None
         self._auth_retry_attempts = 0
-        self._last_seen_auth_signature = self._get_auth_file_signature()
+        current_signature = self._get_auth_file_signature()
+        self._last_seen_auth_signature = current_signature
+        if (
+            self._suppressed_auth_signature is not None
+            and self._suppressed_auth_signature == current_signature
+        ):
+            self._suppressed_auth_signature = None
+            self.status_var.set("auth.json switched. Quota refresh already started.")
+            return
+        self._suppressed_auth_signature = None
+
         self.status_var.set("Auth file changed. Fetching new quota...")
         self.process_auth_file()
 
@@ -2262,8 +2968,16 @@ class CodexMonitorApp:
     def _fetch_usage(self, jwt: str) -> dict:
         return self.api_client.fetch_usage(jwt)
 
+    def _sync_current_auth_backup(self, email: str) -> None:
+        try:
+            self.auth_file_service.backup_current_auth(email)
+        except Exception as backup_error:
+            print(
+                "[Safe Error Log] Failed to sync auth backup for "
+                f"{email}: {backup_error}"
+            )
+
     def _bg_fetch_single(self, expected_email: Optional[str], jwt: str) -> None:
-        del expected_email
         if not jwt:
             self.root.after(0, lambda: self._finish_fetch("No token available for fetch."))
             return
@@ -2272,6 +2986,12 @@ class CodexMonitorApp:
             response = self._fetch_usage(jwt)
             email = self.state.apply_usage_response(response, jwt)
             if email:
+                if expected_email and email != expected_email:
+                    print(
+                        "[Safe Error Log] Expected quota for "
+                        f"{expected_email}, but token belongs to {email}."
+                    )
+                self._sync_current_auth_backup(email)
                 self.root.after(0, self.refresh_ui)
                 message = f"Successfully updated quota for {email}."
             else:
@@ -2290,6 +3010,62 @@ class CodexMonitorApp:
                     "folder, or run 'pip install certifi'."
                 )
 
+            print(f"[Safe Error Log] {message}")
+
+        except Exception as error:
+            message = f"Unknown error: {str(error)}"
+            print(f"[Safe Error Log] Exception triggered: {message}")
+
+        self.root.after(0, lambda m=message: self._finish_fetch(m))
+
+    def _bg_fetch_backup_account(self, expected_email: str, jwt: str) -> None:
+        try:
+            response = self._fetch_usage(jwt)
+            email = self.state.apply_usage_response(
+                response,
+                jwt,
+                activate=False,
+            )
+            if email:
+                self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
+                if email == expected_email:
+                    message = f"Successfully updated quota for {email}."
+                else:
+                    message = (
+                        f"Updated quota for {email}; backup was selected from "
+                        f"{expected_email}."
+                    )
+            else:
+                message = "Warning: Could not find email or reset_at in API response."
+                print(f"[Safe Error Log] {message}")
+
+        except urllib.error.HTTPError as error:
+            if error.code == 401:
+                removed = self.auth_file_service.remove_backup_if_access_token_matches(
+                    expected_email,
+                    jwt,
+                )
+                self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
+                if removed:
+                    message = (
+                        f"HTTP Error 401. Invalidated auth backup for {expected_email}."
+                    )
+                else:
+                    message = (
+                        "HTTP Error 401. Backup token failed, but a newer backup "
+                        f"exists for {expected_email}; kept it."
+                    )
+            else:
+                message = f"HTTP Error {error.code}. Backup fetch failed."
+            print(f"[Safe Error Log] {message}")
+
+        except (urllib.error.URLError, TimeoutError) as error:
+            message = f"Network Error: {getattr(error, 'reason', str(error))}"
+            if "CERTIFICATE_VERIFY_FAILED" in str(getattr(error, "reason", "")):
+                message = (
+                    "SSL Error: Run 'Install Certificates.command' in Mac Python "
+                    "folder, or run 'pip install certifi'."
+                )
             print(f"[Safe Error Log] {message}")
 
         except Exception as error:
@@ -2331,7 +3107,8 @@ class CodexMonitorApp:
         self._finish_fetch(message)
 
     def check_auto_fetch(self) -> None:
-        jwt = self.state.get_due_auto_fetch_jwt(time.time())
+        now = time.time()
+        jwt = self.state.get_due_auto_fetch_jwt(now)
         if jwt:
             email = self.state.current_account_email or "current account"
             interval_label = self.state.get_auto_fetch_value()
@@ -2342,6 +3119,48 @@ class CodexMonitorApp:
                 args=(self.state.current_account_email, jwt),
                 daemon=True,
             ).start()
+        self._auto_fetch_next_backup_account(now)
+
+    def _auto_fetch_next_backup_account(self, now: float) -> None:
+        interval_label = self.state.get_auto_fetch_value()
+        interval_seconds = AUTO_FETCH_INTERVALS.get(interval_label, 0)
+        if interval_seconds <= 0:
+            return
+
+        active_email = self.state.current_account_email
+        candidates = [
+            email
+            for email, data in self._visible_sorted_account_items()
+            if email != active_email
+            and not self._is_archived_account(data)
+            and self.auth_file_service.backup_exists(email)
+            and (now - data.get("last_fetched", 0)) >= interval_seconds
+        ]
+        if not candidates:
+            return
+
+        self._backup_auto_fetch_cursor %= len(candidates)
+        email = candidates[self._backup_auto_fetch_cursor]
+        self._backup_auto_fetch_cursor = (
+            self._backup_auto_fetch_cursor + 1
+        ) % len(candidates)
+
+        try:
+            jwt = self.auth_file_service.load_backup_access_token(email)
+        except Exception as error:
+            self.status_var.set(f"Failed to read auth backup for {email}: {error}")
+            return
+
+        if not jwt:
+            self.status_var.set(f"Auth backup for {email} has no access_token.")
+            return
+
+        self._begin_fetch(f"Auto-fetching saved backup quota for {email}...")
+        threading.Thread(
+            target=self._bg_fetch_backup_account,
+            args=(email, jwt),
+            daemon=True,
+        ).start()
 
     def _is_archived_account(self, data: dict) -> bool:
         return data.get("archived") is True
@@ -2420,6 +3239,7 @@ class CodexMonitorApp:
                     )
                     is_current = email == self.state.current_account_email
                     is_archived = self._is_archived_account(data)
+                    has_auth_backup = self.auth_file_service.backup_exists(email)
                     short_reset_display = format_reset_display(short_reset_ts, now_ts)
                     weekly_reset_display = format_reset_display(weekly_reset_ts, now_ts)
                     weekly_quota_left = format_quota_left(weekly_used_percent)
@@ -2444,6 +3264,7 @@ class CodexMonitorApp:
                     reset_lines = ["Error"]
                     is_current = email == self.state.current_account_email
                     is_archived = self._is_archived_account(data)
+                    has_auth_backup = self.auth_file_service.backup_exists(email)
 
                 self._build_account_row(
                     email=email,
@@ -2451,6 +3272,7 @@ class CodexMonitorApp:
                     reset_lines=reset_lines,
                     is_current=is_current,
                     is_archived=is_archived,
+                    has_auth_backup=has_auth_backup,
                     index=index,
                 )
 
@@ -2467,6 +3289,13 @@ class CodexMonitorApp:
         if self._auth_poll_timer_id:
             self.root.after_cancel(self._auth_poll_timer_id)
             self._auth_poll_timer_id = None
+
+        process = self._login_process
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
 
         self.auth_watcher.stop()
         self.root.destroy()
