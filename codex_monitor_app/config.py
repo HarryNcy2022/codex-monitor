@@ -1,4 +1,5 @@
 import os
+import sys
 
 from .version import get_app_version
 
@@ -22,14 +23,38 @@ HTTP_USER_AGENT = f"{APP_NAME}/{APP_VERSION}"
 AUTH_FILE_PATH = os.path.expanduser("~/.codex/auth.json")
 AUTH_DIR = os.path.dirname(AUTH_FILE_PATH)
 
-# Lightweight local storage equivalent
-LOCAL_STORAGE_FILE = os.path.expanduser("~/.codex_usage_store.json")
-LOCAL_STORAGE_META_FILE = os.path.expanduser("~/.codex_usage_store.meta.json")
-LOCAL_LOG_FILE = os.path.expanduser("~/.codex_usage_store.log")
-AUTH_ACCOUNTS_DIR = os.path.expanduser("~/.codex_usage_store.accounts")
+def _default_app_data_dir() -> str:
+    if sys.platform == "darwin":
+        return os.path.expanduser(f"~/Library/Application Support/{APP_NAME}")
+
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    if xdg_data_home:
+        return os.path.join(os.path.expanduser(xdg_data_home), APP_NAME)
+    return os.path.expanduser(f"~/.local/share/{APP_NAME}")
+
+
+# App-owned storage. The active Codex auth file remains Codex-owned at ~/.codex/auth.json.
+APP_DATA_DIR = _default_app_data_dir()
+LOCAL_STORAGE_FILE = os.path.join(APP_DATA_DIR, "usage.json")
+LOCAL_STORAGE_META_FILE = os.path.join(APP_DATA_DIR, "usage.meta.json")
+LOCAL_LOG_FILE = os.path.join(APP_DATA_DIR, "activity.log")
+AUTH_ACCOUNTS_DIR = os.path.join(APP_DATA_DIR, "accounts")
+
+# Legacy paths used by older versions. They are migrated into APP_DATA_DIR at startup.
+LEGACY_LOCAL_STORAGE_FILE = os.path.expanduser("~/.codex_usage_store.json")
+LEGACY_LOCAL_STORAGE_META_FILE = os.path.expanduser("~/.codex_usage_store.meta.json")
+LEGACY_LOCAL_LOG_FILE = os.path.expanduser("~/.codex_usage_store.log")
+LEGACY_AUTH_ACCOUNTS_DIRS = (
+    os.path.expanduser("~/.codex_usage_store.accounts"),
+    os.path.expanduser("~/.codex/accounts"),
+    os.path.expanduser("~/.codex/codex_monitor/accounts"),
+)
 
 # API URL
 USAGE_API_URL = "https://chatgpt.com/backend-api/wham/usage"
+AUTH_REFRESH_URL = "https://auth.openai.com/oauth/token"
+AUTH_REFRESH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+AUTH_REFRESH_INTERVAL_SECONDS = 8 * 24 * 3600
 
 # Auto-fetch intervals
 SEC_IN_MIN = 60

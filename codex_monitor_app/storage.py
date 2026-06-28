@@ -1,8 +1,15 @@
 import json
 import os
+import shutil
 from typing import Any, Dict, Optional
 
-from .config import AUTO_FETCH_OPTIONS, LOCAL_STORAGE_FILE, LOCAL_STORAGE_META_FILE
+from .config import (
+    AUTO_FETCH_OPTIONS,
+    LEGACY_LOCAL_STORAGE_FILE,
+    LEGACY_LOCAL_STORAGE_META_FILE,
+    LOCAL_STORAGE_FILE,
+    LOCAL_STORAGE_META_FILE,
+)
 from .models import AccountUsage, UsageMap
 
 
@@ -18,6 +25,11 @@ class UsageStorage:
         self.storage_path = storage_path
         self.meta_path = meta_path
         self.meta: Dict[str, Any] = {}
+        if (
+            storage_path == LOCAL_STORAGE_FILE
+            and meta_path == LOCAL_STORAGE_META_FILE
+        ):
+            self._migrate_legacy_files()
 
     def load(self) -> UsageMap:
         data: UsageMap = {}
@@ -107,6 +119,7 @@ class UsageStorage:
         return data
 
     def save(self, data: UsageMap) -> None:
+        self._ensure_parent_dir(self.storage_path)
         with open(self.storage_path, "w", encoding="utf-8") as file:
             json.dump(self._sanitize_usage_map(data), file)
         self._save_meta_file()
@@ -122,7 +135,7 @@ class UsageStorage:
 
     def export_data(self, data: UsageMap) -> Dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "accounts": self._sanitize_usage_map(data),
             "config": self._sanitize_meta(self.meta),
         }
@@ -262,8 +275,33 @@ class UsageStorage:
         return self._sanitize_meta(raw)
 
     def _save_meta_file(self) -> None:
+        self._ensure_parent_dir(self.meta_path)
         with open(self.meta_path, "w", encoding="utf-8") as file:
             json.dump(self._sanitize_meta(self.meta), file)
+
+    def _ensure_parent_dir(self, path: str) -> None:
+        parent_dir = os.path.dirname(path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+
+    def _migrate_legacy_files(self) -> None:
+        self._migrate_legacy_file(LEGACY_LOCAL_STORAGE_FILE, self.storage_path)
+        self._migrate_legacy_file(LEGACY_LOCAL_STORAGE_META_FILE, self.meta_path)
+
+    def _migrate_legacy_file(self, legacy_path: str, target_path: str) -> None:
+        if legacy_path == target_path:
+            return
+        if not os.path.exists(legacy_path) or os.path.exists(target_path):
+            return
+
+        self._ensure_parent_dir(target_path)
+        try:
+            shutil.move(legacy_path, target_path)
+        except OSError:
+            try:
+                shutil.copyfile(legacy_path, target_path)
+            except OSError:
+                pass
 
     def _sanitize_auto_fetch_value(self, value: object) -> str:
         if isinstance(value, str) and value in AUTO_FETCH_OPTIONS:

@@ -4,7 +4,7 @@ import urllib.request
 
 import certifi
 
-from .config import USAGE_API_URL
+from .config import AUTH_REFRESH_CLIENT_ID, AUTH_REFRESH_URL, USAGE_API_URL
 from .models import UsageResponse
 
 BROWSER_LIKE_HEADERS = {
@@ -37,6 +37,39 @@ class UsageApiClient:
                 **BROWSER_LIKE_HEADERS,
                 "Authorization": f"Bearer {jwt}",
             },
+        )
+
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(request, context=context, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+
+class AuthRefreshClient:
+    def __init__(
+        self,
+        auth_refresh_url: str = AUTH_REFRESH_URL,
+        client_id: str = AUTH_REFRESH_CLIENT_ID,
+    ):
+        self.auth_refresh_url = auth_refresh_url
+        self.client_id = client_id
+
+    def refresh_tokens(self, refresh_token: str) -> dict:
+        body = json.dumps(
+            {
+                "client_id": self.client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.auth_refresh_url,
+            data=body,
+            headers={
+                **BROWSER_LIKE_HEADERS,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            method="POST",
         )
 
         context = ssl.create_default_context(cafile=certifi.where())

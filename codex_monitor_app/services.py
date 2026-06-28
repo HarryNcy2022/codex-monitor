@@ -4,13 +4,17 @@ import re
 import shutil
 import tempfile
 import time
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
+from .api import AuthRefreshClient
 from .config import (
     AUTH_ACCOUNTS_DIR,
     AUTH_FILE_PATH,
+    AUTH_REFRESH_INTERVAL_SECONDS,
     AUTO_FETCH_INTERVALS,
     AUTO_FETCH_OPTIONS,
+    LEGACY_AUTH_ACCOUNTS_DIRS,
 )
 from .models import AuthFileSnapshot, RateLimitWindow, UsageMap, UsageResponse
 from .storage import UsageStorage
@@ -77,6 +81,13 @@ class MonitorStateService:
 
     def remember_auth_jwt(self, jwt: Optional[str]) -> None:
         self.latest_auth_jwt = jwt
+
+    def remember_account_jwt(self, email: str, jwt: str) -> None:
+        if not email or not jwt:
+            return
+        self.session_tokens[email] = jwt
+        if email == self.current_account_email:
+            self.latest_auth_jwt = jwt
 
     def set_current_account(self, email: str, jwt: str) -> None:
         self.current_account_email = email
@@ -311,6 +322,8 @@ class AuthFileService:
     ):
         self.auth_file_path = auth_file_path
         self.accounts_dir = accounts_dir
+        if accounts_dir == AUTH_ACCOUNTS_DIR:
+            self._migrate_legacy_account_backups()
 
     def auth_file_exists(self) -> bool:
         return os.path.exists(self.auth_file_path)
@@ -336,6 +349,31 @@ class AuthFileService:
 
     def backup_exists(self, email: str) -> bool:
         return os.path.exists(self.backup_path_for_email(email))
+
+    def list_backup_emails(self) -> List[str]:
+        if not os.path.isdir(self.accounts_dir):
+            return []
+
+        emails: List[str] = []
+        for filename in os.listdir(self.accounts_dir):
+            if not filename.startswith("auth-") or not filename.endswith(".json"):
+                continue
+            path = os.path.join(self.accounts_dir, filename)
+            if not os.path.isfile(path):
+                continue
+            try:
+                snapshot = self.load_snapshot_from_path(path)
+            except (json.JSONDecodeError, OSError, ValueError, TypeError):
+                continue
+            email = snapshot.get("email")
+            if isinstance(email, str) and email:
+                emails.append(email)
+                continue
+            tokens = snapshot.get("tokens", {})
+            account_id = tokens.get("account_id") if isinstance(tokens, dict) else None
+            if isinstance(account_id, str) and account_id:
+                emails.append(filename[len("auth-") : -len(".json")])
+        return sorted(set(emails))
 
     def backup_current_auth(self, email: str) -> str:
         if not self.auth_file_exists():
@@ -380,8 +418,51 @@ class AuthFileService:
             raise ValueError("backup auth root must be an object")
         return auth_data
 
+    def export_backups(self, emails: List[str]) -> Dict[str, AuthFileSnapshot]:
+        exported: Dict[str, AuthFileSnapshot] = {}
+        for email in sorted(set([*emails, *self.list_backup_emails()])):
+            if not email or not self.backup_exists(email):
+                continue
+            try:
+                exported[email] = self.load_backup_snapshot(email)
+            except (json.JSONDecodeError, OSError, ValueError, TypeError):
+                continue
+        return exported
+
+    def import_backups(self, backups: object) -> int:
+        if not isinstance(backups, dict):
+            return 0
+
+        imported_count = 0
+        for email, snapshot in backups.items():
+            if not isinstance(email, str) or not email:
+                continue
+            if not isinstance(snapshot, dict):
+                continue
+            tokens = snapshot.get("tokens")
+            if not isinstance(tokens, dict) or not tokens.get("access_token"):
+                continue
+            self._write_backup_snapshot(email, snapshot)
+            imported_count += 1
+        return imported_count
+
     def load_backup_access_token(self, email: str) -> Optional[str]:
         return self.load_backup_snapshot(email).get("tokens", {}).get("access_token")
+
+    def refresh_backup_if_due(
+        self,
+        email: str,
+        refresh_client: AuthRefreshClient,
+        force: bool = False,
+        now: Optional[float] = None,
+    ) -> AuthFileSnapshot:
+        snapshot = self.load_backup_snapshot(email)
+        if not force and not self._snapshot_needs_refresh(snapshot, now):
+            return snapshot
+
+        refreshed_snapshot = self._refresh_snapshot_tokens(snapshot, refresh_client)
+        self._write_backup_snapshot(email, refreshed_snapshot)
+        return refreshed_snapshot
 
     def switch_to_account_backup(
         self,
@@ -452,6 +533,120 @@ class AuthFileService:
                 pass
             raise
         return target_path
+
+    def _write_backup_snapshot(self, email: str, snapshot: AuthFileSnapshot) -> str:
+        target_path = self.backup_path_for_email(email)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(
+            prefix=f".{os.path.basename(target_path)}.",
+            suffix=".tmp",
+            dir=os.path.dirname(target_path),
+        )
+        os.close(temp_fd)
+        try:
+            with open(temp_path, "w", encoding="utf-8") as file:
+                json.dump(snapshot, file, indent=2)
+            try:
+                os.chmod(temp_path, 0o600)
+            except OSError:
+                pass
+            os.replace(temp_path, target_path)
+        except Exception:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            raise
+        return target_path
+
+    def _refresh_snapshot_tokens(
+        self,
+        snapshot: AuthFileSnapshot,
+        refresh_client: AuthRefreshClient,
+    ) -> AuthFileSnapshot:
+        tokens = snapshot.get("tokens")
+        if not isinstance(tokens, dict):
+            raise ValueError("auth backup has no tokens object")
+
+        refresh_token = tokens.get("refresh_token")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            raise ValueError("auth backup has no refresh_token")
+
+        refreshed = refresh_client.refresh_tokens(refresh_token)
+        access_token = refreshed.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise ValueError("token refresh response has no access_token")
+
+        next_snapshot: AuthFileSnapshot = dict(snapshot)
+        next_tokens = dict(tokens)
+        for field in ("id_token", "access_token", "refresh_token"):
+            value = refreshed.get(field)
+            if isinstance(value, str) and value:
+                next_tokens[field] = value
+        next_snapshot["tokens"] = next_tokens
+        next_snapshot["last_refresh"] = self._current_refresh_timestamp()
+        return next_snapshot
+
+    def _snapshot_needs_refresh(
+        self,
+        snapshot: AuthFileSnapshot,
+        now: Optional[float] = None,
+    ) -> bool:
+        tokens = snapshot.get("tokens")
+        if not isinstance(tokens, dict):
+            return False
+        refresh_token = tokens.get("refresh_token")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            return False
+
+        last_refresh_ts = self._parse_refresh_timestamp(snapshot.get("last_refresh"))
+        if last_refresh_ts is None:
+            return True
+
+        now_ts = time.time() if now is None else now
+        return (now_ts - last_refresh_ts) >= AUTH_REFRESH_INTERVAL_SECONDS
+
+    def _parse_refresh_timestamp(self, value: object) -> Optional[float]:
+        if not isinstance(value, str) or not value:
+            return None
+
+        normalized = value
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+
+    def _current_refresh_timestamp(self) -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
+            "+00:00",
+            "Z",
+        )
+
+    def _migrate_legacy_account_backups(self) -> None:
+        for legacy_dir in LEGACY_AUTH_ACCOUNTS_DIRS:
+            if legacy_dir == self.accounts_dir or not os.path.isdir(legacy_dir):
+                continue
+            try:
+                os.makedirs(self.accounts_dir, exist_ok=True)
+                for filename in os.listdir(legacy_dir):
+                    if not filename.startswith("auth-") or not filename.endswith(".json"):
+                        continue
+                    source_path = os.path.join(legacy_dir, filename)
+                    target_path = os.path.join(self.accounts_dir, filename)
+                    if not os.path.isfile(source_path) or os.path.exists(target_path):
+                        continue
+                    shutil.move(source_path, target_path)
+                try:
+                    os.rmdir(legacy_dir)
+                except OSError:
+                    pass
+            except OSError:
+                continue
 
     def _safe_account_file_key(self, email: str) -> str:
         safe_email = re.sub(r"[^A-Za-z0-9._@+-]+", "_", email.strip())

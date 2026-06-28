@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
-from .api import UsageApiClient
+from .api import AuthRefreshClient, UsageApiClient
 from .config import (
     APP_VERSION,
     APP_TITLE,
@@ -23,6 +23,7 @@ from .config import (
     AUTH_FILE_PATH,
     AUTO_FETCH_INTERVALS,
     AUTO_FETCH_OPTIONS,
+    LEGACY_LOCAL_LOG_FILE,
     LOCAL_LOG_FILE,
     UPDATE_CHECK_INTERVAL_SECONDS,
     WINDOW_GEOMETRY,
@@ -138,6 +139,7 @@ class CodexMonitorApp:
 
         self.storage = UsageStorage()
         self.api_client = UsageApiClient()
+        self.auth_refresh_client = AuthRefreshClient()
         self.state = MonitorStateService(self.storage)
         self.auth_file_service = AuthFileService()
         self.auth_watcher = AuthFileWatcher(
@@ -197,6 +199,7 @@ class CodexMonitorApp:
         self._tooltips = []
         self._row_tooltips = []
         self._material_symbols_available = register_material_symbols_font()
+        self._migrate_legacy_log_file()
 
         self._sort_save_timer: Optional[str] = None
         self._spinner_timer_id: Optional[str] = None
@@ -1209,6 +1212,7 @@ class CodexMonitorApp:
         self._last_logged_status = message
         line = self._timestamped_log_line(message)
         try:
+            os.makedirs(os.path.dirname(LOCAL_LOG_FILE), exist_ok=True)
             with open(LOCAL_LOG_FILE, "a", encoding="utf-8") as file:
                 file.write(f"{line}\n")
         except OSError:
@@ -1216,6 +1220,21 @@ class CodexMonitorApp:
 
         if self.logs_expanded:
             self._refresh_log_textbox()
+
+    def _migrate_legacy_log_file(self) -> None:
+        if LEGACY_LOCAL_LOG_FILE == LOCAL_LOG_FILE:
+            return
+        if not os.path.exists(LEGACY_LOCAL_LOG_FILE) or os.path.exists(LOCAL_LOG_FILE):
+            return
+
+        try:
+            os.makedirs(os.path.dirname(LOCAL_LOG_FILE), exist_ok=True)
+            shutil.move(LEGACY_LOCAL_LOG_FILE, LOCAL_LOG_FILE)
+        except OSError:
+            try:
+                shutil.copyfile(LEGACY_LOCAL_LOG_FILE, LOCAL_LOG_FILE)
+            except OSError:
+                pass
 
     def _read_log_text(self) -> str:
         try:
@@ -1271,6 +1290,7 @@ class CodexMonitorApp:
 
     def clear_logs(self) -> None:
         try:
+            os.makedirs(os.path.dirname(LOCAL_LOG_FILE), exist_ok=True)
             with open(LOCAL_LOG_FILE, "w", encoding="utf-8"):
                 pass
         except OSError as error:
@@ -1611,20 +1631,10 @@ class CodexMonitorApp:
             self.refresh_ui(skip_auto_fetch=True)
             return
 
-        try:
-            jwt = self.auth_file_service.load_backup_access_token(email)
-        except Exception as error:
-            self.status_var.set(f"Failed to read auth backup for {email}: {error}")
-            return
-
-        if not jwt:
-            self.status_var.set(f"Auth backup for {email} has no access_token.")
-            return
-
-        self._begin_fetch(f"Fetching quota for {email} from saved auth backup...")
+        self._begin_fetch(f"Refreshing saved auth backup and fetching quota for {email}...")
         threading.Thread(
             target=self._bg_fetch_backup_account,
-            args=(email, jwt),
+            args=(email,),
             daemon=True,
         ).start()
 
@@ -1642,23 +1652,67 @@ class CodexMonitorApp:
         try:
             subprocess.run(
                 [
-                    "osascript",
+                    "/usr/bin/osascript",
                     "-e",
                     'tell application "Codex" to quit',
-                    "-e",
-                    "delay 1",
-                    "-e",
-                    'tell application "Codex" to activate',
                 ],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            message = "Requested Codex restart."
+            self._wait_for_codex_to_exit()
+            if self._open_codex_app():
+                message = "Requested Codex restart."
+            else:
+                message = "Requested Codex quit, but reopening Codex failed."
         except Exception as error:
             message = f"Failed to restart Codex: {error}"
 
         self.root.after(0, lambda m=message: self.status_var.set(m))
+
+    def _wait_for_codex_to_exit(self) -> None:
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if not self._is_codex_app_running():
+                return
+            time.sleep(0.25)
+
+    def _is_codex_app_running(self) -> bool:
+        try:
+            result = subprocess.run(
+                [
+                    "/usr/bin/osascript",
+                    "-e",
+                    'application "Codex" is running',
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        except Exception:
+            return False
+        return result.stdout.strip().lower() == "true"
+
+    def _open_codex_app(self) -> bool:
+        commands = [
+            ["/usr/bin/open", "-b", "com.openai.codex"],
+            ["/usr/bin/open", "/Applications/Codex.app"],
+            ["/usr/bin/open", "-a", "Codex"],
+        ]
+        for command in commands:
+            try:
+                result = subprocess.run(
+                    command,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                continue
+            if result.returncode == 0:
+                return True
+        return False
 
     def toggle_show_archived(self) -> None:
         self.show_archived = not self.show_archived
@@ -1680,11 +1734,35 @@ class CodexMonitorApp:
         if not path:
             return
 
+        should_export = messagebox.askyesno(
+            APP_TITLE,
+            "Export complete app data including saved auth tokens?",
+        )
+        if not should_export:
+            return
+
         try:
+            current_email = self.state.current_account_email
+            if current_email and self.auth_file_service.auth_file_exists():
+                self._sync_current_auth_backup(current_email)
+
             payload = self.storage.export_data(self.state.usage_map)
+            payload["auth_backups"] = self.auth_file_service.export_backups(
+                list(self.state.usage_map.keys())
+            )
+            if self.auth_file_service.auth_file_exists():
+                try:
+                    active_snapshot = self.auth_file_service.load_snapshot()
+                    if active_snapshot.get("tokens", {}).get("access_token"):
+                        payload["active_auth"] = active_snapshot
+                except Exception:
+                    pass
             with open(path, "w", encoding="utf-8") as file:
                 json.dump(payload, file, indent=2)
-            self.status_var.set(f"Exported accounts and config to {path}.")
+            backup_count = len(payload.get("auth_backups", {}))
+            self.status_var.set(
+                f"Exported accounts, config, and {backup_count} auth backup(s) to {path}."
+            )
         except Exception as error:
             self.status_var.set(f"Export failed: {error}")
 
@@ -1698,7 +1776,10 @@ class CodexMonitorApp:
 
         should_import = messagebox.askyesno(
             APP_TITLE,
-            "Import accounts and app config from this JSON file? Existing accounts are merged.",
+            (
+                "Import accounts, app config, and auth backups from this JSON file? "
+                "Existing accounts are merged. The live ~/.codex/auth.json file is not replaced."
+            ),
         )
         if not should_import:
             return
@@ -1707,6 +1788,26 @@ class CodexMonitorApp:
             with open(path, "r", encoding="utf-8") as file:
                 payload = json.load(file)
             self.state.import_data(payload)
+            backup_payload = payload.get("auth_backups", {})
+            active_snapshot = payload.get("active_auth")
+            current_email = self.state.current_account_email
+            if (
+                current_email
+                and isinstance(active_snapshot, dict)
+                and active_snapshot.get("tokens", {}).get("access_token")
+            ):
+                backup_payload = dict(backup_payload) if isinstance(backup_payload, dict) else {}
+                backup_payload.setdefault(current_email, active_snapshot)
+
+            imported_backup_count = self.auth_file_service.import_backups(backup_payload)
+            for email in self.state.usage_map:
+                try:
+                    jwt = self.auth_file_service.load_backup_access_token(email)
+                except Exception:
+                    continue
+                if jwt:
+                    self.state.remember_account_jwt(email, jwt)
+
             self.sort_column = self._normalized_sort_column(self.state.sort_column)
             self.sort_asc = self.state.sort_asc
             self.show_archived = self.state.show_archived
@@ -1716,7 +1817,9 @@ class CodexMonitorApp:
             self._sync_logs_visibility()
             self.refresh_ui(skip_auto_fetch=True)
             self._update_manual_button_state()
-            self.status_var.set(f"Imported accounts and config from {path}.")
+            self.status_var.set(
+                f"Imported accounts, config, and {imported_backup_count} auth backup(s) from {path}."
+            )
         except Exception as error:
             self.status_var.set(f"Import failed: {error}")
 
@@ -1931,6 +2034,13 @@ class CodexMonitorApp:
         dialog.lift()
 
     def _close_codex_login_dialog(self) -> None:
+        if self._login_in_progress:
+            self._stop_codex_login_process()
+            self._login_in_progress = False
+            self._login_process = None
+            self.status_var.set("Codex login closed.")
+            self._update_manual_button_state()
+
         if self._login_dialog:
             try:
                 self._login_dialog.destroy()
@@ -1939,13 +2049,19 @@ class CodexMonitorApp:
         self._login_dialog = None
         self._login_output_textbox = None
 
-    def cancel_codex_login(self) -> None:
+    def _stop_codex_login_process(self) -> bool:
         process = self._login_process
-        if process and process.poll() is None:
-            try:
-                process.terminate()
-            except OSError:
-                pass
+        if not process or process.poll() is not None:
+            return False
+
+        try:
+            process.terminate()
+            return True
+        except OSError:
+            return False
+
+    def cancel_codex_login(self) -> None:
+        if self._stop_codex_login_process():
             self.status_var.set("Codex login cancelled.")
             self._append_login_output("\nLogin cancelled.\n")
         self._login_in_progress = False
@@ -2098,6 +2214,9 @@ class CodexMonitorApp:
         return f"Codex login finished. Added and activated {email}."
 
     def _finish_codex_login(self, message: str) -> None:
+        if not self._login_in_progress and self._login_process is None:
+            return
+
         self._login_in_progress = False
         self._login_process = None
         self.status_var.set(message)
@@ -3018,8 +3137,34 @@ class CodexMonitorApp:
 
         self.root.after(0, lambda m=message: self._finish_fetch(m))
 
-    def _bg_fetch_backup_account(self, expected_email: str, jwt: str) -> None:
+    def _load_refreshed_backup_access_token(
+        self,
+        email: str,
+        *,
+        force: bool = False,
+        now: Optional[float] = None,
+    ) -> Optional[str]:
+        snapshot = self.auth_file_service.refresh_backup_if_due(
+            email,
+            self.auth_refresh_client,
+            force=force,
+            now=now,
+        )
+        jwt = snapshot.get("tokens", {}).get("access_token")
+        if isinstance(jwt, str) and jwt:
+            self.state.remember_account_jwt(email, jwt)
+            return jwt
+        return None
+
+    def _bg_fetch_backup_account(self, expected_email: str) -> None:
+        jwt: Optional[str] = None
         try:
+            jwt = self._load_refreshed_backup_access_token(expected_email)
+            if not jwt:
+                message = f"Auth backup for {expected_email} has no access_token."
+                self.root.after(0, lambda m=message: self._finish_fetch(m))
+                return
+
             response = self._fetch_usage(jwt)
             email = self.state.apply_usage_response(
                 response,
@@ -3040,21 +3185,15 @@ class CodexMonitorApp:
                 print(f"[Safe Error Log] {message}")
 
         except urllib.error.HTTPError as error:
-            if error.code == 401:
-                removed = self.auth_file_service.remove_backup_if_access_token_matches(
-                    expected_email,
-                    jwt,
-                )
+            if jwt is None:
+                self.auth_file_service.remove_backup(expected_email)
                 self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
-                if removed:
-                    message = (
-                        f"HTTP Error 401. Invalidated auth backup for {expected_email}."
-                    )
-                else:
-                    message = (
-                        "HTTP Error 401. Backup token failed, but a newer backup "
-                        f"exists for {expected_email}; kept it."
-                    )
+                message = (
+                    f"HTTP Error {error.code}. Removed auth backup for "
+                    f"{expected_email} because token refresh failed."
+                )
+            elif error.code == 401:
+                message = self._retry_backup_fetch_after_401(expected_email, jwt)
             else:
                 message = f"HTTP Error {error.code}. Backup fetch failed."
             print(f"[Safe Error Log] {message}")
@@ -3069,10 +3208,62 @@ class CodexMonitorApp:
             print(f"[Safe Error Log] {message}")
 
         except Exception as error:
-            message = f"Unknown error: {str(error)}"
+            if jwt is None:
+                self.auth_file_service.remove_backup(expected_email)
+                self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
+                message = (
+                    f"Removed auth backup for {expected_email} because token "
+                    f"refresh failed: {str(error)}"
+                )
+            else:
+                message = f"Unknown error: {str(error)}"
             print(f"[Safe Error Log] Exception triggered: {message}")
 
         self.root.after(0, lambda m=message: self._finish_fetch(m))
+
+    def _retry_backup_fetch_after_401(
+        self,
+        expected_email: str,
+        failed_jwt: Optional[str],
+    ) -> str:
+        try:
+            refreshed_jwt = self._load_refreshed_backup_access_token(
+                expected_email,
+                force=True,
+            )
+            if not refreshed_jwt:
+                raise ValueError("refresh did not return an access_token")
+
+            response = self._fetch_usage(refreshed_jwt)
+            email = self.state.apply_usage_response(
+                response,
+                refreshed_jwt,
+                activate=False,
+            )
+            self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
+            if email == expected_email:
+                return f"Refreshed auth backup and updated quota for {email}."
+            if email:
+                return (
+                    f"Refreshed auth backup and updated quota for {email}; "
+                    f"backup was selected from {expected_email}."
+                )
+            return (
+                "Refreshed auth backup after HTTP 401, but could not parse "
+                "the quota response."
+            )
+        except Exception:
+            removed = self.auth_file_service.remove_backup(expected_email)
+            self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
+            if removed:
+                return (
+                    "HTTP Error 401. Backup token failed and refresh did not "
+                    f"succeed; removed auth backup for {expected_email}."
+                )
+            return (
+                "HTTP Error 401. Backup token failed and refresh did not succeed; "
+                f"no auth backup remained for {expected_email}."
+            )
 
     def _final_snapshot_and_clear(self, email: Optional[str], jwt: str) -> None:
         account_label = email or "current account"
@@ -3145,20 +3336,10 @@ class CodexMonitorApp:
             self._backup_auto_fetch_cursor + 1
         ) % len(candidates)
 
-        try:
-            jwt = self.auth_file_service.load_backup_access_token(email)
-        except Exception as error:
-            self.status_var.set(f"Failed to read auth backup for {email}: {error}")
-            return
-
-        if not jwt:
-            self.status_var.set(f"Auth backup for {email} has no access_token.")
-            return
-
-        self._begin_fetch(f"Auto-fetching saved backup quota for {email}...")
+        self._begin_fetch(f"Refreshing saved auth backup and auto-fetching quota for {email}...")
         threading.Thread(
             target=self._bg_fetch_backup_account,
-            args=(email, jwt),
+            args=(email,),
             daemon=True,
         ).start()
 
@@ -3197,6 +3378,7 @@ class CodexMonitorApp:
             key=lambda item: (
                 1 if self._is_archived_account(item[1]) else 0,
                 0 if item[0] == active_email and not self._is_archived_account(item[1]) else 1,
+                0 if self.auth_file_service.backup_exists(item[0]) else 1,
             )
         )
         return items
