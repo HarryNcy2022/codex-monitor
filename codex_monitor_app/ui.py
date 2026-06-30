@@ -194,7 +194,7 @@ class CodexMonitorApp:
         self._login_output_textbox: Optional[tk.Text] = None
         self._login_opened_url: Optional[str] = None
         self._login_process: Optional[subprocess.Popen] = None
-        self._login_success_email: Optional[str] = None
+        self._login_added_email: Optional[str] = None
         self._backup_auto_fetch_cursor = 0
         self._tooltips = []
         self._row_tooltips = []
@@ -1831,7 +1831,7 @@ class CodexMonitorApp:
         self._snapshot_active_auth_before_login()
         self._login_in_progress = True
         self._login_opened_url = None
-        self._login_success_email = None
+        self._login_added_email = None
         self._show_codex_login_dialog()
         self._append_login_output("Starting: codex login\n")
         self.status_var.set("Starting Codex login...")
@@ -2185,14 +2185,9 @@ class CodexMonitorApp:
         if not jwt:
             return "Codex login finished, but isolated auth.json has no access_token."
 
-        self.auth_file_service.activate_auth_from_path(login_auth_path)
-        self._last_seen_auth_signature = self._get_auth_file_signature()
-        self._suppressed_auth_signature = self._last_seen_auth_signature
-        self._remember_auth_snapshot(snapshot)
-
         try:
             response = self._fetch_usage(jwt)
-            email = self.state.apply_usage_response(response, jwt)
+            email = self.state.apply_usage_response(response, jwt, activate=False)
         except Exception as error:
             self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
             return f"Codex login finished, but quota fetch failed: {error}"
@@ -2210,8 +2205,8 @@ class CodexMonitorApp:
             )
 
         self.root.after(0, lambda: self.refresh_ui(skip_auto_fetch=True))
-        self._login_success_email = email
-        return f"Codex login finished. Added and activated {email}."
+        self._login_added_email = email
+        return f"Codex login finished. Added {email}; active Codex account was not changed."
 
     def _finish_codex_login(self, message: str) -> None:
         if not self._login_in_progress and self._login_process is None:
@@ -2221,11 +2216,10 @@ class CodexMonitorApp:
         self._login_process = None
         self.status_var.set(message)
         self._append_login_output(f"\n{message}\n")
-        success_email = self._login_success_email
-        self._login_success_email = None
-        if success_email:
+        added_email = self._login_added_email
+        self._login_added_email = None
+        if added_email:
             self._close_codex_login_dialog()
-            self._show_switch_success_dialog(success_email)
         self._update_manual_button_state()
 
     def _schedule_next_update_check(self) -> None:
